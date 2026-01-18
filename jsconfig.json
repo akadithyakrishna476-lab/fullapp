@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/components/*": ["./components/*"],
+      "@/constants/*": ["./constants/*"],
+      "@/hooks/*": ["./hooks/*"],
+      "@/screens/*": ["./screens/*"],
+      "@/utils/*": ["./utils/*"],
+      "@/assets/*": ["./assets/*"],
+      "@/firebase/*": ["./firebase/*"]
+    }
+  },
+  "exclude": ["node_modules", "babel.config.js", "metro.config.js", ".expo"]
+}
