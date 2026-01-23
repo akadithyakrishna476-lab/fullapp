@@ -165,6 +165,7 @@ const FacultyDashboard = () => {
       Calendar: 'calendar',
       TodoList: 'todo-list',
       StaffAdvisor: 'staff-advisor',
+      Announcements: 'send-announcement',
     };
     const path = map[screen] || screen.toLowerCase();
     router.push(`/${path}`);

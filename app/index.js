@@ -1,43 +1,51 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter } from 'expo-router';
+import { useRouter, useSegments } from 'expo-router';
 import { onAuthStateChanged } from 'firebase/auth';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { auth } from '../firebase/firebaseConfig';
+import { fetchUserRole } from '../utils/authHelpers';
 
 export default function Index() {
-  const router = useRouter();
   const [loading, setLoading] = useState(true);
+  const router = useRouter();
+  const segments = useSegments();
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (!user) {
-        await AsyncStorage.clear().catch(() => {});
-        router.replace('/role-select');
-      } else {
-        // Check user role and redirect appropriately
-        const userRole = await AsyncStorage.getItem('userRole');
-        if (userRole === 'faculty') {
-          router.replace('/faculty-dashboard');
-        } else if (userRole === 'rep') {
-          router.replace('/rep-dashboard');
+      try {
+        if (user) {
+          console.log('User is authenticated:', user.uid);
+          const { role } = await fetchUserRole(user.uid, user.email);
+
+          if (role === 'faculty') {
+            router.replace('/faculty-dashboard');
+          } else if (role === 'class_representative') {
+            router.replace('/cr-dashboard');
+          } else if (role === 'representative') { // Handle potential legacy role name
+            router.replace('/rep-dashboard');
+          } else {
+            // Fallback for unknown roles or new users
+            console.log('Unknown role, redirecting to role select');
+            router.replace('/role-select');
+          }
         } else {
+          console.log('User is not authenticated');
           router.replace('/role-select');
         }
+      } catch (error) {
+        console.error('Auth state change error:', error);
+        router.replace('/role-select');
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => unsubscribe();
   }, []);
 
-  if (loading) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
-        <ActivityIndicator size="large" color="#3498db" />
-      </View>
-    );
-  }
-
-  return null;
+  return (
+    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+      <ActivityIndicator size="large" color="#0000ff" />
+    </View>
+  );
 }

@@ -93,8 +93,8 @@ const CRDashboard = () => {
       title: 'Announcements',
       icon: 'megaphone',
       color: '#b56a2b',
-      description: 'Send announcements',
-      screen: '/send-announcement',
+      description: 'View announcements',
+      screen: { pathname: '/send-announcement', params: { mode: 'view' } },
     },
     {
       id: '5',
@@ -111,6 +111,14 @@ const CRDashboard = () => {
       color: '#9b59b6',
       description: 'Contact advisors',
       screen: '/chat-with-rep',
+    },
+    {
+      id: '7',
+      title: 'Password Sharing',
+      icon: 'key',
+      color: '#1f6feb',
+      description: 'Share temp passwords',
+      screen: '/password-sharing',
     },
   ];
 

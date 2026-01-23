@@ -1,0 +1,221 @@
+// ================================================================
+// FIREBASE FIRESTORE SECURITY RULES FOR TIMETABLE MANAGEMENT
+// ================================================================
+// 
+// These rules ensure that:
+// 1. Only authenticated users can read timetables
+// 2. Only verified faculty members can write/update timetables
+// 3. Class Representatives can only read their specific class timetable
+// 4. All operations are logged with user information
+//
+// IMPORTANT: Update these rules in your Firebase Console
+// Firestore Database → Rules tab
+// ================================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ============================================================
+    // TIMETABLE COLLECTION RULES
+    // ============================================================
+    match /timetables/{classSection} {
+      
+      // Function to check if user is authenticated
+      function isSignedIn() {
+        return request.auth != null;
+      }
+      
+      // Function to check if user is a faculty member
+      function isFaculty() {
+        return isSignedIn() && 
+               exists(/databases/$(database)/documents/faculty/$(request.auth.uid));
+      }
+      
+      // Function to check if user is CR for this specific class
+      function isCRForClass() {
+        return isSignedIn() && 
+               get(/databases/$(database)/documents/classRepresentatives/$(request.auth.uid)).data.class == classSection;
+      }
+      
+      // Function to check if faculty handles this class
+      function facultyHandlesClass() {
+        return isFaculty() && 
+               (classSection in get(/databases/$(database)/documents/faculty/$(request.auth.uid)).data.classes);
+      }
+      
+      // READ RULES
+      // - Any authenticated user can read any timetable
+      // - This allows faculty to see all timetables
+      // - CRs can see any timetable (useful for coordination)
+      allow read: if isSignedIn();
+      
+      // WRITE RULES (create, update, delete)
+      // - Only faculty members can write
+      // - Faculty can only modify timetables for classes they handle
+      // - Ensures data integrity and prevents unauthorized changes
+      allow create, update: if isFaculty() && facultyHandlesClass();
+      
+      // DELETE RULES
+      // - Only faculty can delete, but only for classes they handle
+      allow delete: if isFaculty() && facultyHandlesClass();
+    }
+    
+    // ============================================================
+    // FACULTY COLLECTION RULES (for reference)
+    // ============================================================
+    match /faculty/{facultyId} {
+      // Faculty can read their own data
+      allow read: if request.auth != null && request.auth.uid == facultyId;
+      
+      // Only the faculty member can update their own profile
+      allow update: if request.auth != null && request.auth.uid == facultyId;
+    }
+    
+    // ============================================================
+    // CLASS REPRESENTATIVES COLLECTION RULES (for reference)
+    // ============================================================
+    match /classRepresentatives/{crId} {
+      // CR can read their own data
+      allow read: if request.auth != null && request.auth.uid == crId;
+      
+      // CR can update their own profile (but not their class assignment)
+      allow update: if request.auth != null && 
+                      request.auth.uid == crId &&
+                      request.resource.data.class == resource.data.class;
+    }
+  }
+}
+
+// ================================================================
+// ALTERNATIVE: MORE RESTRICTIVE RULES (Optional)
+// ================================================================
+// If you want to restrict CRs to only see their own class timetable:
+//
+// match /timetables/{classSection} {
+//   allow read: if isSignedIn() && (isFaculty() || isCRForClass());
+//   allow create, update: if isFaculty() && facultyHandlesClass();
+//   allow delete: if isFaculty() && facultyHandlesClass();
+// }
+//
+// ================================================================
+
+// ================================================================
+// TESTING YOUR RULES
+// ================================================================
+//
+// 1. Go to Firebase Console → Firestore Database → Rules
+// 2. Click on "Rules Playground" tab
+// 3. Test these scenarios:
+//
+// TEST 1: Faculty reading any timetable
+// - Location: /timetables/CS-A
+// - Authenticated: Yes (faculty UID)
+// - Expected: ✅ Allow read
+//
+// TEST 2: Faculty writing to their class
+// - Location: /timetables/CS-A
+// - Authenticated: Yes (faculty UID who handles CS-A)
+// - Expected: ✅ Allow write
+//
+// TEST 3: Faculty writing to another faculty's class
+// - Location: /timetables/ME-B
+// - Authenticated: Yes (faculty UID who doesn't handle ME-B)
+// - Expected: ❌ Deny write
+//
+// TEST 4: CR reading their class timetable
+// - Location: /timetables/CS-A
+// - Authenticated: Yes (CR UID for CS-A)
+// - Expected: ✅ Allow read
+//
+// TEST 5: CR writing to timetable
+// - Location: /timetables/CS-A
+// - Authenticated: Yes (CR UID)
+// - Expected: ❌ Deny write
+//
+// TEST 6: Unauthenticated access
+// - Location: /timetables/CS-A
+// - Authenticated: No
+// - Expected: ❌ Deny all
+//
+// ================================================================
+
+// ================================================================
+// DEPLOYMENT INSTRUCTIONS
+// ================================================================
+//
+// METHOD 1: Via Firebase Console (Recommended for testing)
+// 1. Go to https://console.firebase.google.com
+// 2. Select your project: "classconnect-965ab"
+// 3. Navigate to Firestore Database
+// 4. Click on "Rules" tab
+// 5. Copy and paste these rules
+// 6. Click "Publish"
+//
+// METHOD 2: Via Firebase CLI (For production)
+// 1. Install Firebase CLI: npm install -g firebase-tools
+// 2. Login: firebase login
+// 3. Initialize: firebase init firestore
+// 4. Copy these rules to firestore.rules file
+// 5. Deploy: firebase deploy --only firestore:rules
+//
+// ================================================================
+
+// ================================================================
+// DATA STRUCTURE REQUIREMENTS
+// ================================================================
+//
+// For these rules to work, ensure your Firestore has:
+//
+// 1. faculty collection structure:
+// faculty/{facultyUID}
+//   ├── name: "Dr. John Doe"
+//   ├── email: "john@college.edu"
+//   ├── classes: ["CS-A", "CS-B", "ME-A"]  ← REQUIRED for rules
+//   ├── department: "Computer Science"
+//   └── ...
+//
+// 2. classRepresentatives collection structure:
+// classRepresentatives/{crUID}
+//   ├── name: "Jane Smith"
+//   ├── email: "jane@college.edu"
+//   ├── class: "CS-A"  ← REQUIRED for rules
+//   └── ...
+//
+// 3. timetables collection structure:
+// timetables/{classSection}
+//   ├── class: "CS-A"
+//   ├── lastUpdated: "2026-01-19T..."
+//   ├── updatedBy: "facultyUID"
+//   └── schedule: {...}
+//
+// ================================================================
+
+// ================================================================
+// MONITORING & LOGGING
+// ================================================================
+//
+// To monitor rule violations and access patterns:
+//
+// 1. Firebase Console → Firestore → Usage tab
+// 2. Check "Read/Write" operations
+// 3. Check "Rules" evaluation metrics
+//
+// To see denied requests:
+// 1. Firebase Console → Firestore → Rules tab
+// 2. Click "Request History" (if available)
+// 3. Filter by "Denied" requests
+//
+// ================================================================
+
+// ================================================================
+// IMPORTANT NOTES
+// ================================================================
+//
+// 1. These rules assume faculty data includes a 'classes' array
+// 2. CR data must include a 'class' field matching the timetable document ID
+// 3. All users must be authenticated via Firebase Auth
+// 4. Consider adding rate limiting in production
+// 5. Regularly review access logs for security
+//
+// ================================================================

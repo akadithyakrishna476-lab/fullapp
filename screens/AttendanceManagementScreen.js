@@ -1,35 +1,39 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useState, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useLocalSearchParams } from 'expo-router';
 import { BackHandler } from 'react-native';
 import {
-    Alert,
-    FlatList,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Alert,
+  FlatList,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-const AttendanceManagementScreen = ({ navigation, route }) => {
-    // Hardware back: go to previous screen if possible
-    useFocusEffect(
-      useCallback(() => {
-        const onBackPress = () => {
-          if (navigation?.canGoBack?.()) {
-            navigation.goBack();
-            return true;
-          }
-          return false;
-        };
-        const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
-        return () => subscription.remove();
-      }, [navigation])
-    );
-  const { classId, year } = route.params || {};
-  
+const AttendanceManagementScreen = () => {
+  const navigation = useNavigation();
+  const params = useLocalSearchParams();
+  const { classId, year } = params;
+
+  // Hardware back: go to previous screen if possible
+  useFocusEffect(
+    useCallback(() => {
+      const onBackPress = () => {
+        if (navigation?.canGoBack?.()) {
+          navigation.goBack();
+          return true;
+        }
+        return false;
+      };
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+    }, [navigation])
+  );
+
   const [sessions, setSessions] = useState([
     {
       id: '1',
