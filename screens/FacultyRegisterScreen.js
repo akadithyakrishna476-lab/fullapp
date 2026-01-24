@@ -1,21 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
-import { collection, doc, getDocs, query, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Keyboard,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    TouchableWithoutFeedback,
-    View,
+  ActivityIndicator,
+  Alert,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  TouchableWithoutFeedback,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/firebaseConfig';
@@ -48,7 +48,7 @@ const FacultyRegisterScreen = () => {
   const [confirmPasswordError, setConfirmPasswordError] = useState('');
   const [facultyNameError, setFacultyNameError] = useState('');
   const [emailError, setEmailError] = useState('');
-  
+
   // Validation helper functions
   const isValidFacultyName = (name) => {
     if (!name.trim()) return false;
@@ -59,37 +59,37 @@ const FacultyRegisterScreen = () => {
 
   const isValidEmail = (email) => {
     if (!email.trim()) return false;
-    
+
     const trimmedEmail = email.trim().toLowerCase();
-    
+
     // Strict email validation (RFC 5322 compliant)
     // Format: localpart@domain
     const emailRegex = /^[a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-    
+
     if (!emailRegex.test(trimmedEmail)) return false;
-    
+
     // Additional validation rules
     const [localPart, domain] = trimmedEmail.split('@');
-    
+
     // Local part validations
     if (localPart.length === 0 || localPart.length > 64) return false; // RFC 5321
     if (localPart.startsWith('.') || localPart.endsWith('.')) return false;
     if (localPart.includes('..')) return false;
-    
+
     // Domain validations
     if (domain.length === 0 || domain.length > 255) return false; // RFC 5321
     if (domain.startsWith('.') || domain.endsWith('.')) return false;
     if (domain.includes('..')) return false;
     if (!domain.includes('.')) return false;
-    
+
     // Domain must have valid TLD (at least 2 characters, at least 1 letter)
     const domainParts = domain.split('.');
     const tld = domainParts[domainParts.length - 1];
     if (tld.length < 2 || !/[a-zA-Z]/.test(tld)) return false;
-    
+
     // Each domain label must not start or end with hyphen
     if (domainParts.some(part => part.startsWith('-') || part.endsWith('-'))) return false;
-    
+
     return true;
   };
 
@@ -98,7 +98,10 @@ const FacultyRegisterScreen = () => {
       try {
         setLoadingData(true);
 
-        const collegesQuery = query(collection(db, 'colleges'));
+        const collegesQuery = query(
+          collection(db, 'colleges'),
+          where('isActive', '==', true)
+        );
         const collegesSnapshot = await getDocs(collegesQuery);
         const collegesList = collegesSnapshot.docs.map(d => ({
           id: d.id,
@@ -123,7 +126,7 @@ const FacultyRegisterScreen = () => {
     try {
       setDepartmentsLoading(true);
       const deptsRef = collection(db, 'colleges', collegeId, 'departments');
-      const deptsSnapshot = await getDocs(query(deptsRef));
+      const deptsSnapshot = await getDocs(query(deptsRef, where('isActive', '==', true)));
       const deptsList = deptsSnapshot.docs.map(d => ({ id: d.id, name: d.data().name }));
       setDepartments(deptsList);
     } catch (error) {
@@ -153,13 +156,13 @@ const FacultyRegisterScreen = () => {
     } else if (!isValidFacultyName(facultyName)) {
       newErrors.facultyName = 'Invalid name format';
     }
-    
+
     if (!email.trim()) {
       newErrors.email = 'Email is required';
     } else if (!isValidEmail(email)) {
       newErrors.email = 'Invalid email address';
     }
-    
+
     if (!password.trim()) newErrors.password = 'Password is required';
     else if (password.length < 6) newErrors.password = 'Password must be at least 6 characters';
     if (!confirmPassword.trim()) newErrors.confirmPassword = 'Please confirm your password';
@@ -197,7 +200,7 @@ const FacultyRegisterScreen = () => {
     const lowerText = text.toLowerCase();
     setEmail(lowerText);
     setErrors(prev => ({ ...prev, email: undefined }));
-    
+
     // Clear helper text
     setEmailError('');
   };
@@ -217,7 +220,7 @@ const FacultyRegisterScreen = () => {
       .join('');
 
     setPassword(filteredText);
-    
+
     // Show error message if user tried to enter invalid characters
     if (filteredText !== text) {
       setPasswordError('Password can contain only letters, numbers, and special characters');
@@ -225,7 +228,7 @@ const FacultyRegisterScreen = () => {
     } else {
       setPasswordError('');
     }
-    
+
     setErrors(prev => ({ ...prev, password: undefined }));
   };
 
@@ -237,7 +240,7 @@ const FacultyRegisterScreen = () => {
       .join('');
 
     setConfirmPassword(filteredText);
-    
+
     // Show error message if user tried to enter invalid characters
     if (filteredText !== text) {
       setConfirmPasswordError('Password can contain only letters, numbers, and special characters');
@@ -245,7 +248,7 @@ const FacultyRegisterScreen = () => {
     } else {
       setConfirmPasswordError('');
     }
-    
+
     setErrors(prev => ({ ...prev, confirmPassword: undefined }));
   };
 
@@ -304,7 +307,7 @@ const FacultyRegisterScreen = () => {
         [
           {
             text: 'OK',
-              onPress: () => {
+            onPress: () => {
               // Clear form
               setFacultyName('');
               setEmail('');
@@ -449,8 +452,8 @@ const FacultyRegisterScreen = () => {
                     onFocus={() => setFocusedField('password')}
                     onBlur={() => setFocusedField(null)}
                   />
-                  <TouchableOpacity 
-                    style={styles.iconStyle} 
+                  <TouchableOpacity
+                    style={styles.iconStyle}
                     onPress={() => setPasswordVisible(v => !v)}
                   >
                     <Ionicons name={passwordVisible ? 'eye' : 'eye-off'} size={20} color="#7f8c8d" />
@@ -481,8 +484,8 @@ const FacultyRegisterScreen = () => {
                     onFocus={() => setFocusedField('confirmPassword')}
                     onBlur={() => setFocusedField(null)}
                   />
-                  <TouchableOpacity 
-                    style={styles.iconStyle} 
+                  <TouchableOpacity
+                    style={styles.iconStyle}
                     onPress={() => setConfirmPasswordVisible(v => !v)}
                   >
                     <Ionicons name={confirmPasswordVisible ? 'eye' : 'eye-off'} size={20} color="#7f8c8d" />
@@ -504,9 +507,9 @@ const FacultyRegisterScreen = () => {
                   placeholder="e.g., Assistant Professor, Lecturer"
                   placeholderTextColor="#bdc3c7"
                   value={designation}
-                  onChangeText={text => { 
-                    setDesignation(text); 
-                    setErrors(prev => ({ ...prev, designation: undefined })); 
+                  onChangeText={text => {
+                    setDesignation(text);
+                    setErrors(prev => ({ ...prev, designation: undefined }));
                   }}
                   editable={!loading}
                   onFocus={() => setFocusedField('designation')}
@@ -550,7 +553,7 @@ const FacultyRegisterScreen = () => {
                   }}
                   editable={!loading}
                 />
-                
+
                 {/* College Suggestions - using map() NO FlatList */}
                 {showCollegeSuggestions && (collegeQuery.length > 0 || !selectedCollege) && (
                   <View style={styles.suggestionsContainer}>
