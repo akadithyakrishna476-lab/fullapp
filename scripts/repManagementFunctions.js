@@ -21,7 +21,7 @@
 // Set these up with your Firebase Admin SDK
 
 import admin from 'firebase-admin';
-import { generateSecurePassword } from '../utils/passwordGenerator.js';
+import { generateSecurePassword, generateCRPassword } from '../utils/passwordGenerator.js';
 
 /**
  * FACULTY ENDPOINT: Assign a student as Class Representative
@@ -106,8 +106,24 @@ export const assignClassRepresentative = async (req, res) => {
 
     const normalizedEmail = String(studentEmail).trim().toLowerCase();
 
-    // Generate new password
-    const newPassword = generateSecurePassword();
+    // Retrieve student's first name for password generation
+    let studentFirstName = 'Student'; // Fallback
+    try {
+      const studentDoc = await admin.firestore()
+        .collection('users')
+        .doc(studentUid)
+        .get();
+      
+      if (studentDoc.exists() && studentDoc.data()?.firstName) {
+        studentFirstName = studentDoc.data().firstName;
+      }
+    } catch (err) {
+      console.warn(`Could not retrieve student name: ${err.message}`);
+      // Continue with fallback name
+    }
+
+    // Generate new password in format: firstname@1234
+    const newPassword = generateCRPassword(studentFirstName);
 
     // Step 1: Create or update user in Firebase Auth
     let uid = studentUid;
@@ -198,10 +214,10 @@ export const assignClassRepresentative = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: `Class Representative assigned successfully. Password sent to ${normalizedEmail}`,
+      password: newPassword,
+      securityWarning: 'Share these credentials securely. The student should change the password after first login.',
       uid,
-      passwordVersion: newPasswordVersion,
-      // NEVER return the actual password in production
-      // password: newPassword // Only for development/testing
+      passwordVersion: newPasswordVersion
     });
 
   } catch (error) {
@@ -322,7 +338,24 @@ export const reassignClassRepresentative = async (req, res) => {
     // Step 2: Create/Update new rep
     console.log(`✅ Setting up new rep: ${newStudentUid}`);
 
-    const newPassword = generateSecurePassword();
+    // Retrieve new student's first name for password generation
+    let newStudentFirstName = 'Student'; // Fallback
+    try {
+      const newStudentDoc = await admin.firestore()
+        .collection('users')
+        .doc(newStudentUid)
+        .get();
+      
+      if (newStudentDoc.exists() && newStudentDoc.data()?.firstName) {
+        newStudentFirstName = newStudentDoc.data().firstName;
+      }
+    } catch (err) {
+      console.warn(`Could not retrieve new student name: ${err.message}`);
+      // Continue with fallback name
+    }
+
+    // Generate new password in format: firstname@1234
+    const newPassword = generateCRPassword(newStudentFirstName);
 
     let newUid = newStudentUid;
     try {
@@ -401,6 +434,8 @@ export const reassignClassRepresentative = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: 'Class Representative reassigned successfully',
+      password: newPassword,
+      securityWarning: 'Share these credentials securely. The student should change the password after first login.',
       newUid,
       oldRepDisabled: true,
       newPasswordVersion

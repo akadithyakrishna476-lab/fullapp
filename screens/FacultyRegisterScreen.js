@@ -3,6 +3,7 @@ import { useRouter } from 'expo-router';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { collection, doc, getDocs, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import React, { useEffect, useState } from 'react';
+import { validateFacultyPassword } from '../utils/facultyPasswordValidator';
 import {
   ActivityIndicator,
   Alert,
@@ -163,10 +164,22 @@ const FacultyRegisterScreen = () => {
       newErrors.email = 'Invalid email address';
     }
 
-    if (!password.trim()) newErrors.password = 'Password is required';
-    else if (password.length < 6) newErrors.password = 'Password must be at least 6 characters';
-    if (!confirmPassword.trim()) newErrors.confirmPassword = 'Please confirm your password';
-    else if (password !== confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
+    if (!password.trim()) {
+      newErrors.password = 'Password is required';
+    } else {
+      // Validate faculty password format
+      const passwordValidation = validateFacultyPassword(password, facultyName);
+      if (!passwordValidation.isValid) {
+        newErrors.password = passwordValidation.error;
+      }
+    }
+    
+    if (!confirmPassword.trim()) {
+      newErrors.confirmPassword = 'Please confirm your password';
+    } else if (password !== confirmPassword) {
+      newErrors.confirmPassword = 'Passwords do not match';
+    }
+    
     if (!designation.trim()) newErrors.designation = 'Designation is required';
     if (!selectedCollege) newErrors.college = 'College is required';
     if (!selectedDepartment) newErrors.department = 'Department is required';

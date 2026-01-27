@@ -2,15 +2,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    Alert,
-    FlatList,
-    Modal,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  Alert,
+  FlatList,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -18,20 +18,20 @@ const StaffAdvisorScreen = () => {
   const navigation = useNavigation();
   const [activeTab, setActiveTab] = useState('overview');
   const [classInfo, setClassInfo] = useState({
-    name: 'Class A (Year 1)',
+    name: 'Class A (Year 1 (2025))',
     strength: 45,
     representative: 'Rahul Kumar',
     repContact: 'rahul@example.com',
   });
 
   const [tasks, setTasks] = useState([
-    { id: '1', title: 'Submit Syllabus', assignedTo: 'Class Rep', dueDate: '2025-01-20', status: 'pending' },
-    { id: '2', title: 'Schedule Class Meeting', assignedTo: 'Class Rep', dueDate: '2025-01-18', status: 'completed' },
+    { id: '1', title: 'Submit Syllabus', assignedTo: 'Class Rep', dueDate: '2025-02-10', status: 'pending' },
+    { id: '2', title: 'Schedule Class Meeting', assignedTo: 'Class Rep', dueDate: '2025-02-05', status: 'completed' },
   ]);
 
   const [announcements, setAnnouncements] = useState([
-    { id: '1', title: 'Mid-Semester Exam Schedule', date: '2025-01-10', message: 'Exams scheduled for Jan 25-28' },
-    { id: '2', title: 'New Academic Calendar', date: '2025-01-05', message: 'Updated calendar released by KTU' },
+    { id: '1', title: 'Mid-Semester Exam Schedule', date: '2025-02-15', message: 'Exams scheduled for Feb 25-28' },
+    { id: '2', title: 'New Academic Calendar', date: '2025-02-01', message: 'Updated calendar released' },
   ]);
 
   const [attendanceStats, setAttendanceStats] = useState({

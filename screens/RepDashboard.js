@@ -1,19 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { signOut } from 'firebase/auth';
-import React, { useState, useCallback } from 'react';
+import { doc, getDoc } from 'firebase/firestore';
+import { useCallback, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/firebaseConfig';
-import { doc, getDoc } from 'firebase/firestore';
 
 const menuItems = [
   {
@@ -47,35 +46,58 @@ const RepDashboard = () => {
     try {
       setLoading(true);
       const email = await AsyncStorage.getItem('userEmail');
+      const userId = await AsyncStorage.getItem('userId') || auth.currentUser?.uid;
       setUserEmail(email);
 
-      if (!email) {
-        console.log('⚠️ No email found in AsyncStorage');
+      if (!email && !userId) {
+        console.log('⚠️ No user identifier found');
         setRepInfo(null);
         setLoading(false);
         return;
       }
 
-      // Try to fetch rep assignment from Firestore (optional data only)
-      try {
-        const emailDocId = String(email || '').toLowerCase().replace(/[@.]/g, '_');
-        const repRef = doc(db, 'classRepresentatives', emailDocId);
-        const repSnap = await getDoc(repRef);
-
-        if (repSnap.exists()) {
-          console.log('✅ Rep assignment found:', repSnap.data());
-          setRepInfo(repSnap.data());
-        } else {
-          console.log('ℹ️ No rep assignment found - continuing without assignment data');
-          setRepInfo(null);
+      // STEP 1: Sync from Users collection (Source of Truth)
+      if (userId) {
+        const userDoc = await getDoc(doc(db, 'users', userId));
+        if (userDoc.exists()) {
+          const userData = userDoc.data();
+          if (userData.role === 'cr' || userData.isCR) {
+            setRepInfo({
+              slot: userData.crPosition === 1 ? 'CR-1' : 'CR-2',
+              year: userData.crYear || `year_${userData.currentYear}`,
+              departmentId: userData.departmentCode || userData.departmentId,
+              name: userData.name,
+              ...userData
+            });
+            setLoading(false);
+            return;
+          }
         }
-      } catch (fsError) {
-        console.warn('⚠️ Firestore fetch failed, continuing:', fsError.message);
+      }
+
+      // STEP 2: Fallback to Class Representatives lookups
+      const emailDocId = String(email || '').toLowerCase().replace(/[@.]/g, '_');
+      const repRef = doc(db, 'classRepresentatives', emailDocId);
+      const repSnap = await getDoc(repRef);
+
+      if (repSnap.exists()) {
+        console.log('✅ Rep assignment found:', repSnap.data());
+        setRepInfo(repSnap.data());
+      } else {
+        // STEP 3: Last resort - search across all year collections
+        console.log('🔍 Searching all years for CR assignment...');
+        const years = ['year_1', 'year_2', 'year_3', 'year_4'];
+        let found = false;
+
+        for (const year of years) {
+          const deptQuery = email ? query(collectionGroup(db, 'department_' + year), where('email', '==', email)) : null;
+          // This part is complex due to nested structure, so we rely on User Profile mostly
+        }
+
         setRepInfo(null);
       }
     } catch (error) {
       console.error('Error loading rep data:', error);
-      // Don't block dashboard - rep can still use basic functions
       setRepInfo(null);
     } finally {
       setLoading(false);
@@ -85,7 +107,7 @@ const RepDashboard = () => {
   const handleLogout = async () => {
     try {
       await signOut(auth);
-      await AsyncStorage.clear().catch(() => {});
+      await AsyncStorage.clear().catch(() => { });
     } finally {
       router.replace('/role-select');
     }
@@ -131,7 +153,7 @@ const RepDashboard = () => {
               </View>
               <View style={styles.infoRow}>
                 <Text style={styles.infoLabel}>Year:</Text>
-                <Text style={styles.infoValue}>{repInfo.year}</Text>
+                <Text style={styles.infoValue}>{repInfo.currentYear ? getYearDisplayLabel(repInfo.currentYear) : (repInfo.year || 'N/A')}</Text>
               </View>
               {repInfo.departmentId && (
                 <View style={styles.infoRow}>

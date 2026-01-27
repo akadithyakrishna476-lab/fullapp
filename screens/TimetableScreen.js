@@ -6,24 +6,25 @@ import { useNavigation } from 'expo-router';
 import { collection, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    BackHandler,
-    Modal,
-    StyleSheet,
-    Switch,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  Modal,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/firebaseConfig';
+import { getCurrentAcademicYear, getYearDisplayLabel } from '../constants/academicYear';
 import {
-    cancelAllScheduledNotificationsAsync,
-    requestPermissionsAsync,
-    scheduleNotificationAsync,
-    setupNotificationHandler
+  cancelAllScheduledNotificationsAsync,
+  requestPermissionsAsync,
+  scheduleNotificationAsync,
+  setupNotificationHandler
 } from '../utils/notificationHelper';
 
 // Setup notification handler
@@ -39,6 +40,13 @@ const PERIOD_TIMES = {
   5: '01:00 - 02:00',
   6: '02:00 - 03:00',
 };
+
+const YEAR_MAP = [
+  { id: 'Year 1', label: getYearDisplayLabel(1) },
+  { id: 'Year 2', label: getYearDisplayLabel(2) },
+  { id: 'Year 3', label: getYearDisplayLabel(3) },
+  { id: 'Year 4', label: getYearDisplayLabel(4) },
+];
 
 const TimetableScreen = () => {
   const navigation = useNavigation();
@@ -76,8 +84,7 @@ const TimetableScreen = () => {
   }, []);
 
   const fetchYearsFromCRAssignments = async () => {
-    // Always return all 4 academic years
-    // CR assignment is optional - not required for year to appear
+    // Return internal IDs for logic use
     return ['Year 1', 'Year 2', 'Year 3', 'Year 4'];
   };
 
@@ -153,7 +160,7 @@ const TimetableScreen = () => {
 
       // Schedule notifications for the next 4 weeks (Android doesn't support calendar repeating triggers)
       const weeksToSchedule = 4;
-      
+
       Object.values(timetableData).forEach(entry => {
         if (entry.facultyId === auth.currentUser.uid) {
           const dayIndex = DAYS.indexOf(entry.day);
@@ -167,7 +174,7 @@ const TimetableScreen = () => {
             const now = new Date();
             let daysToAdd = (dayIndex + 1) - now.getDay();
             if (daysToAdd <= 0) daysToAdd += 7;
-            
+
             // Add the week offset
             daysToAdd += (week * 7);
 
@@ -531,7 +538,7 @@ const TimetableScreen = () => {
                   </Text>
                   {classData?.class && (
                     <Text style={styles.cellClass} numberOfLines={1}>
-                      {classData.class}
+                      {YEAR_MAP.find(y => y.id === classData.class)?.label || classData.class}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -632,12 +639,15 @@ const TimetableScreen = () => {
                 enabled={userRole === 'faculty' || (userRole === 'cr' && editCrPermission)}
               >
                 <Picker.Item label="-- Select Year --" value="" />
-                {facultyClasses.map((classYear) => (
-                  <Picker.Item key={classYear} label={classYear} value={classYear} />
+                {YEAR_MAP.map((y) => (
+                  <Picker.Item key={y.id} label={y.label} value={y.id} />
                 ))}
                 {/* If CR, simply show option for their current class since they might not have list of all years */}
-                {userRole === 'cr' && facultyClasses.length === 0 && (
-                  <Picker.Item label={userClass || editClass} value={userClass || editClass} />
+                {userRole === 'cr' && (
+                  <Picker.Item
+                    label={YEAR_MAP.find(y => y.id === userClass)?.label || userClass || editClass}
+                    value={userClass || editClass}
+                  />
                 )}
               </Picker>
             </View>

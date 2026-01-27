@@ -60,6 +60,46 @@ export const generateResetToken = () => {
 };
 
 /**
+ * Generate CR-specific password in format: firstname@1234
+ * 
+ * This function converts a student's first name to a standardized password format:
+ * - Lowercase the first name
+ * - Remove spaces and special characters
+ * - Append @ symbol
+ * - Append 4 random digits (0000-9999)
+ * 
+ * Example: "Athulkrishna" → "athulkrishna@4821"
+ * 
+ * @param {string} firstName The student's first name (e.g., "Athulkrishna")
+ * @returns {string} Password in format: firstname@1234
+ */
+export const generateCRPassword = (firstName) => {
+  if (!firstName || typeof firstName !== 'string') {
+    // Fallback if no name provided
+    return generateSecurePassword();
+  }
+
+  // Convert to lowercase
+  let cleanName = firstName.toLowerCase().trim();
+
+  // Remove spaces and special characters, keep only alphanumeric
+  cleanName = cleanName.replace(/[^a-z0-9]/g, '');
+
+  // Handle edge case of empty name after cleanup
+  if (!cleanName) {
+    return generateSecurePassword();
+  }
+
+  // Generate 4 random digits
+  const randomDigits = Math.floor(Math.random() * 10000)
+    .toString()
+    .padStart(4, '0');
+
+  // Return in format: firstname@1234
+  return `${cleanName}@${randomDigits}`;
+};
+
+/**
  * Validate password strength
  * Requirements:
  * - Minimum 8 characters

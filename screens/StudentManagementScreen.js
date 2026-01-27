@@ -4,8 +4,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useNavigation, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
-import { addDoc, collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { collection, deleteField, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,18 +21,41 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import StudentCard from '../components/StudentCard';
 import { auth, db, getSecondaryAuth } from '../firebase/firebaseConfig';
+import { getCurrentAcademicYear, getStudentDistribution, getYearDisplayLabel, loadAcademicYear, promoteAcademicYear } from '../utils/academicYearManager';
+import { generateCRPassword } from '../utils/crManagement';
 
-const YEARS = [
-  { id: 'year1', label: 'Year 1' },
-  { id: 'year2', label: 'Year 2' },
-  { id: 'year3', label: 'Year 3' },
-  { id: 'year4', label: 'Year 4' },
+const computeCurrentYear = (joiningYear) => {
+  const base = getCurrentAcademicYear();
+  return Math.max(1, base - Number(joiningYear) + 1);
+};
+
+const buildYearId = (currentYear) => `year${currentYear}`;
+
+const getYearMeta = (currentYear, globalAcademicYear = 2025) => {
+  const numericYear = Number(currentYear);
+  const correspondingAcademicYear = globalAcademicYear - numericYear + 1;
+  return {
+    currentYear: numericYear,
+    yearId: buildYearId(numericYear),
+    label: `Year ${numericYear}`,
+    academicYear: correspondingAcademicYear, // This is the batch/joining year
+    fullLabel: getYearDisplayLabel(numericYear),
+  };
+};
+
+const buildYearOptions = (globalAcademicYear) => [
+  getYearMeta(1, globalAcademicYear),
+  getYearMeta(2, globalAcademicYear),
+  getYearMeta(3, globalAcademicYear),
+  getYearMeta(4, globalAcademicYear),
 ];
+
+const YEAR_OPTIONS = buildYearOptions(2025); // Default fallback to new mapping base
 
 const StudentManagementScreen = () => {
   const router = useRouter();
   const navigation = useNavigation();
-  const [selectedYear, setSelectedYear] = useState('year1');
+  const [selectedYear, setSelectedYear] = useState(1); // Year 1, 2, 3, or 4
   const [students, setStudents] = useState([]);
   const [classRepresentatives, setClassRepresentatives] = useState({ cr1: null, cr2: null });
   const [crSelection, setCrSelection] = useState({ cr1: null, cr2: null }); // For CR Management tab
@@ -47,6 +70,24 @@ const StudentManagementScreen = () => {
   const [savedCredentials, setSavedCredentials] = useState([]);
   const [credentialsModalVisible, setCredentialsModalVisible] = useState(false);
   const [credentialsYearLabel, setCredentialsYearLabel] = useState('');
+  const [academicYear, setAcademicYear] = useState(2027);
+  const [promoting, setPromoting] = useState(false);
+
+  // Calculate academic year for each year level dynamically
+  // Formula: Year N students belong to batch (currentAcademicYear - N + 1)
+  // Example: If currentAcademicYear = 2025:
+  //   Year 1 → 2025 (current year freshers)
+  //   Year 2 → 2024 (joined last year)
+  //   Year 3 → 2023 (joined 2 years ago)
+  //   Year 4 → 2022 (joined 3 years ago)
+  const getAcademicYearForLevel = useCallback((yearLevel) => {
+    return academicYear - yearLevel + 1;
+  }, [academicYear]);
+
+  const yearOptions = useMemo(() => buildYearOptions(academicYear), [academicYear]);
+  const selectedYearMeta = useMemo(() => getYearMeta(selectedYear, academicYear), [selectedYear, academicYear]);
+  const getYearTitle = useCallback((year) => getYearMeta(year, academicYear).fullLabel, [academicYear]);
+
 
   // Faculty department info
   const [collegeId, setCollegeId] = useState(null);
@@ -81,17 +122,24 @@ const StudentManagementScreen = () => {
   const getActiveDepartmentCode = () => departmentCode || departmentId;
   const buildDeptPaths = (year = selectedYear) => {
     const dept = getActiveDepartmentCode();
+    const yearId = buildYearId(year);
     return {
-      students: `students/${year}/departments/${dept}/students`,
-      reps: `classRepresentatives/${year}/departments/${dept}/reps`,
+      students: `students/${yearId}/departments/${dept}/students`,
+      reps: `classrepresentative/year_${year}/department_${dept}`,
     };
   };
-  const cacheKeyFor = (year = selectedYear) => `${year}::${getActiveDepartmentCode() || 'unknown'}`;
+  const cacheKeyFor = (year = selectedYear) => `${buildYearId(year)}::${getActiveDepartmentCode() || 'unknown'}`;
 
   // Load faculty department info on mount
   useEffect(() => {
     loadFacultyDepartmentInfo();
+    initAcademicYear();
   }, [facultyId]);
+
+  const initAcademicYear = async () => {
+    const year = await loadAcademicYear();
+    setAcademicYear(year);
+  };
 
   const loadFacultyDepartmentInfo = async () => {
     if (!facultyId) {
@@ -166,6 +214,64 @@ const StudentManagementScreen = () => {
       if (!error.message?.includes('offline')) {
         Alert.alert('Error', 'Failed to load faculty information');
       }
+    }
+  };
+
+  const handlePromoteAcademicYear = async () => {
+    try {
+      // Get distribution first
+      const distribution = await getStudentDistribution();
+      const year4 = distribution.find(d => d.currentYear === 4);
+      const year4Count = year4?.studentCount || 0;
+
+      const summaryLines = distribution
+        .filter(d => d.studentCount > 0)
+        .map(d => `• ${d.label}: ${d.studentCount} students`)
+        .join('\n');
+
+      Alert.alert(
+        '🎓 Promote Academic Year',
+        `This will:\n\n` +
+        `✓ Increment academic year: ${academicYear} → ${academicYear + 1}\n` +
+        `✓ Migrate students: Year 3→4, Year 2→3, Year 1→2\n` +
+        `✓ Archive ${year4Count} graduating (Year 4) students\n` +
+        `✓ Preserve each student's joining year\n\n` +
+        `Current Distribution:\n${summaryLines}\n\n` +
+        `⚠️ This action cannot be undone. Continue?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Promote',
+            style: 'destructive',
+            onPress: async () => {
+              setPromoting(true);
+              try {
+                const result = await promoteAcademicYear(auth.currentUser?.uid);
+
+                if (result.success) {
+                  setAcademicYear(result.newYear);
+                  Alert.alert(
+                    '✅ Promotion Complete',
+                    result.message +
+                    `\n\nNew Academic Year: ${result.newYear}\n` +
+                    `Students Migrated: ${result.migratedCount || 0}\n` +
+                    `Students Graduated: ${result.archivedCount || 0}\n\n` +
+                    `All students have been migrated to their next year.`
+                  );
+                } else {
+                  Alert.alert('Error', result.message);
+                }
+              } catch (error) {
+                Alert.alert('Error', `Promotion failed: ${error.message}`);
+              } finally {
+                setPromoting(false);
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      Alert.alert('Error', `Failed to load student data: ${error.message}`);
     }
   };
 
@@ -280,9 +386,15 @@ const StudentManagementScreen = () => {
       const { students: deptStudentsPath, reps: deptCRPath } = buildDeptPaths(selectedYear);
       const deptStudentsRef = collection(db, deptStudentsPath);
       const snapshot = await getDocs(deptStudentsRef);
-      const studentsList = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+
+
+
+      // Filter students to only show those with the correct academic_year
+      const studentsList = snapshot.docs
+        .map(d => ({ id: d.id, ...d.data() }));
 
       // Sort students by Roll Number
+
       studentsList.sort((a, b) => {
         const rollA = parseInt(a.rollNo || a.rollNumber || 0, 10) || 0;
         const rollB = parseInt(b.rollNo || b.rollNumber || 0, 10) || 0;
@@ -297,12 +409,22 @@ const StudentManagementScreen = () => {
 
       // Get all active reps and assign to cr1 and cr2
       const activeReps = crSnap.docs.filter(d => d.data().active === true);
-      if (activeReps.length > 0) {
-        crObj.cr1 = { id: activeReps[0].id, ...activeReps[0].data() };
-      }
-      if (activeReps.length > 1) {
-        crObj.cr2 = { id: activeReps[1].id, ...activeReps[1].data() };
-      }
+
+      activeReps.forEach(doc => {
+        const data = doc.data();
+        // Use ID or slot field for accurate mapping
+        if (doc.id === 'cr_1' || data.slot === 'CR-1') {
+          crObj.cr1 = { id: doc.id, ...data };
+        } else if (doc.id === 'cr_2' || data.slot === 'CR-2') {
+          crObj.cr2 = { id: doc.id, ...data };
+        } else if (!crObj.cr1) {
+          // Fallback for legacy records without fixed IDs/slots
+          crObj.cr1 = { id: doc.id, ...data };
+        } else if (!crObj.cr2) {
+          crObj.cr2 = { id: doc.id, ...data };
+        }
+      });
+
       setClassRepresentatives(crObj);
 
       // cache results
@@ -504,6 +626,11 @@ const StudentManagementScreen = () => {
     const nameParts = (draft.name || '').split(' ').filter(Boolean);
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ');
+    const joiningYear = getCurrentAcademicYear() - selectedYear + 1; // Calculate joining year from current year
+
+    // Calculate academic_year for this year level
+    // This represents the batch year (when students at this level originally joined)
+    const academicYear = getAcademicYearForLevel(selectedYear);
 
     await setDoc(ref, {
       studentId: id,
@@ -514,7 +641,11 @@ const StudentManagementScreen = () => {
       lastName,
       email: (draft.email || '').toLowerCase(),
       phone: draft.phone || '',
-      year: selectedYear,
+      joiningYear,
+      currentYear: selectedYear,
+      year_level: selectedYear, // Explicitly store year level
+      academic_year: academicYear,
+      currentAcademicYear: getCurrentAcademicYear(),
       departmentCode: dept,
       departmentId: dept,
       departmentName: departmentName || dept,
@@ -634,7 +765,7 @@ const StudentManagementScreen = () => {
           .map((f) => `"${String(f).replace(/"/g, '""')}"`).join(',');
         csv += row + '\n';
       });
-      const yearLabel = YEARS.find(y => y.id === selectedYear)?.label.replace(/\s+/g, '_') || selectedYear;
+      const yearLabel = getYearTitle(selectedYear).replace(/\s+/g, '_');
       const filename = `student_list_${yearLabel}.csv`;
       const appDir = FileSystem.documentDirectory + 'ClassConnect/';
       const dirInfo = await FileSystem.getInfoAsync(appDir);
@@ -786,6 +917,9 @@ const StudentManagementScreen = () => {
       const newBatch = writeBatch(db);
       const nowIso = new Date().toISOString();
 
+      // Calculate academic_year for this year level (batch year)
+      const academicYear = getAcademicYearForLevel(selectedYear);
+
       sortedRows.forEach((row) => {
         const studentId = row.id || `student_${row.rollNo.toString().toLowerCase().replace(/\s+/g, '_')}`;
         const { students: deptStudentPath } = buildDeptPaths(selectedYear);
@@ -796,6 +930,7 @@ const StudentManagementScreen = () => {
         const nameParts = row.name.split(' ').filter(Boolean);
         const firstName = nameParts[0] || '';
         const lastName = nameParts.slice(1).join(' ');
+        const joiningYear = getCurrentAcademicYear() - selectedYear + 1; // Calculate joining year from current year
 
         // Save to year-wise students collection (NO Auth UID, NO passwords)
         newBatch.set(yearRef, {
@@ -807,7 +942,10 @@ const StudentManagementScreen = () => {
           lastName,
           email: normalizedEmail,
           phone: row.phone || '',
-          year: selectedYear,
+          joiningYear,
+          currentYear: selectedYear,
+          academic_year: academicYear,
+          currentAcademicYear: getCurrentAcademicYear(),
           departmentCode: dept,
           departmentId: dept,
           departmentName: departmentName || dept,
@@ -1114,6 +1252,9 @@ const StudentManagementScreen = () => {
       // Save to Firestore
       const batch = writeBatch(db);
 
+      // Calculate academic_year for this year level (batch year)
+      const academicYear = getAcademicYearForLevel(selectedYear);
+
       newStudents.forEach((student) => {
         const rollNo = student.rollNumber || student.rollNo;
         const studentId = `student_${String(rollNo).toLowerCase().replace(/\s+/g, '_')}`;
@@ -1122,6 +1263,7 @@ const StudentManagementScreen = () => {
         const nameParts = (student.name || '').split(' ').filter(Boolean);
         const firstName = nameParts[0] || '';
         const lastName = nameParts.slice(1).join(' ');
+        const joiningYear = getCurrentAcademicYear() - selectedYear + 1; // Calculate joining year from current year
 
         batch.set(studentRef, {
           studentId,
@@ -1132,7 +1274,10 @@ const StudentManagementScreen = () => {
           lastName,
           email: (student.email || '').toLowerCase(),
           phone: student.phone || '',
-          year: selectedYear,
+          joiningYear,
+          currentYear: selectedYear,
+          academic_year: academicYear,
+          currentAcademicYear: getCurrentAcademicYear(),
           departmentCode: dept,
           departmentId: dept,
           departmentName: departmentName || dept,
@@ -1190,7 +1335,7 @@ const StudentManagementScreen = () => {
       });
 
       // Generate filename with year
-      const yearLabel = YEARS.find(y => y.id === selectedYear)?.label.replace(/\s+/g, '_') || selectedYear;
+      const yearLabel = getYearTitle(selectedYear).replace(/\s+/g, '_');
       const filename = `student_list_${yearLabel}.csv`;
 
       // Save to writable app document directory
@@ -1522,170 +1667,173 @@ const StudentManagementScreen = () => {
     const studentId = student.id || `student_${student.rollNo?.toString().toLowerCase().replace(/\s+/g, '_')}`;
     const studentName = student.name || 'Unknown';
     const normalizedEmail = normalizeEmail(student.email);
-    if (!normalizedEmail) {
+
+    // Validate email format
+    if (!normalizedEmail || normalizedEmail.length < 3) {
       Alert.alert('Error', 'Student email is required to assign as Class Representative.');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(normalizedEmail)) {
+      Alert.alert(
+        'Invalid Email',
+        `"${student.email}" is not a valid email address.\n\nPlease update the student's email before assigning as CR.`
+      );
       return;
     }
 
     try {
       setLoading(true);
 
-      // Use correct Firestore structure from buildDeptPaths
-      // Structure: classRepresentatives/{year}/departments/{dept}/reps
-      const { reps: deptRepsPath } = buildDeptPaths(selectedYear);
+      // Check if user already exists
+      const usersRef = collection(db, 'users');
+      const userQuery = query(usersRef, where('email', '==', normalizedEmail));
+      const userSnap = await getDocs(userQuery);
 
-      console.log('📝 Assigning CR using path:', deptRepsPath);
+      let crUserId = null;
+      let isNewAccount = false;
+      let tempPasswordForAlert = null;
 
-      // 1. Check CR Limit (Max 2 active CRs per year + department)
-      const crCollectionRef = collection(db, ...deptRepsPath.split('/'));
-      const activeCRQuery = query(crCollectionRef, where('active', '==', true));
-      const activeCRSnapshot = await getDocs(activeCRQuery);
+      if (userSnap.empty) {
+        // AUTO-CREATE: User doesn't exist, create Firebase Auth account + user doc
+        console.log('📝 Creating new auth account for CR:', normalizedEmail);
 
-      const activeCount = activeCRSnapshot.size;
+          // Generate CR password in format: firstname@1234
+          const studentFirstName = student.firstName || student.name?.split(' ')[0] || 'Student';
+          const crPassword = generateCRPassword(studentFirstName);
 
-      // Check if this student is already an active CR
-      const isAlreadyCR = activeCRSnapshot.docs.some(doc => doc.data().email === normalizedEmail);
+        try {
+          // Use secondary auth to avoid logging out the admin
+          const secondaryAuth = getSecondaryAuth();
+          const userCredential = await createUserWithEmailAndPassword(secondaryAuth, normalizedEmail, crPassword);
+          crUserId = userCredential.user.uid;
+          isNewAccount = true;
 
-      if (!isAlreadyCR && activeCount >= 2) {
-        Alert.alert(
-          'CR Limit Reached',
-          `Maximum 2 CRs already assigned for ${departmentName || dept}.\nCurrent count: ${activeCount}\n\nPlease remove an existing CR first.`
-        );
-        setLoading(false);
-        return;
+          console.log('✅ Created new Firebase Auth user:', crUserId);
+          console.log('📧 Email:', normalizedEmail);
+
+          // Store password for later retrieval
+          tempPasswordForAlert = crPassword;
+        } catch (authError) {
+          console.error('❌ Auth creation failed:', authError);
+          Alert.alert('Error', `Failed to create account: ${authError.message}`);
+          setLoading(false);
+          return;
+        }
+      } else {
+        // User already exists, use existing UID
+        crUserId = userSnap.docs[0].id;
+        console.log('✅ Using existing user account:', crUserId);
       }
 
-      // 2. Deactivate existing CR records for this student (if reassigning)
-      const studentCRQuery = query(
-        crCollectionRef,
-        where('email', '==', normalizedEmail),
-        where('active', '==', true)
-      );
-      const studentCRSnapshot = await getDocs(studentCRQuery);
-
-      const batch = writeBatch(db);
-
-      studentCRSnapshot.forEach(docSnap => {
-        batch.update(docSnap.ref, {
-          active: false,
-          deactivatedAt: serverTimestamp(),
-          deactivatedBy: facultyId
-        });
-        console.log(`Deactivated existing CR record for ${normalizedEmail}`);
-      });
-
-      // 3. Generate NEW password (FirstName@XXXX format)
-      const firstName = studentName.split(' ')[0];
-      const randomDigits = Math.floor(1000 + Math.random() * 9000);
-      const crPassword = `${firstName}@${randomDigits}`;
-
-      // 4. Handle Firebase Auth - Try to create, if exists get UID from Firestore
-      const secondaryAuth = getSecondaryAuth();
-      let crUserId = null;
-      let isNewUser = false;
-      let authMethod = 'none';
-
-      try {
-        // Always try to create new user first
-        const userCredential = await createUserWithEmailAndPassword(secondaryAuth, normalizedEmail, crPassword);
-        crUserId = userCredential.user.uid;
-        isNewUser = true;
-        authMethod = 'created';
-        console.log('✅ Created new Firebase Auth user for CR:', crUserId);
-      } catch (authError) {
-        console.log('🔑 Auth error:', authError.code);
-
-        if (authError.code === 'auth/email-already-in-use') {
-          // Email exists - find existing authUid from previous rep records
-          console.log('⚠️ Email already in use, looking up existing auth UID...');
-
-          const existingCRQuery = query(
-            crCollectionRef,
-            where('email', '==', normalizedEmail.toLowerCase())
-          );
-          const existingCRSnapshot = await getDocs(existingCRQuery);
-
-          if (!existingCRSnapshot.empty) {
-            // Use authUid from previous CR record
-            crUserId = existingCRSnapshot.docs[0].data().authUid;
-            console.log('✅ Found existing authUid from previous CR record:', crUserId);
-          } else {
-            // Fallback: lookup or generate UID
-            crUserId = await lookupUserIdByEmail(normalizedEmail) || buildEmailDocId(normalizedEmail);
-            console.log('🔑 Using fallback UID:', crUserId);
-          }
-
-          // Send password reset email so they can set a new password
-          try {
-            await sendPasswordResetEmail(secondaryAuth, normalizedEmail);
-            console.log('📧 Sent password reset email to existing user');
-            authMethod = 'reset';
-          } catch (resetErr) {
-            console.warn('Password reset email warning:', resetErr);
-            authMethod = 'existing';
-          }
-
-          isNewUser = false;
-        } else {
-          // Other auth error - throw it
-          throw authError;
+      let resetEmailSent = false;
+      if (!isNewAccount) {
+        try {
+          console.log('🔑 Triggering automatic password reset for existing account:', normalizedEmail);
+          const secondaryAuth = getSecondaryAuth();
+          await sendPasswordResetEmail(secondaryAuth, normalizedEmail);
+          resetEmailSent = true;
+          console.log('✅ Automatic reset email sent successfully');
+        } catch (resetErr) {
+          console.error('❌ Failed to trigger automatic reset:', resetErr);
         }
       }
 
-      // 5. Create NEW CR record with auto-generated ID
-      const newCRData = {
+      const { students: deptStudentPath, reps: deptCRPath } = buildDeptPaths(selectedYear);
+      const batch = writeBatch(db);
+
+      // STEP A: Deactivate ANY existing active CR records for this slot in this year+dept
+      // This cleans up legacy records with random IDs or other students assigned to this slot
+      const existingCRCol = collection(db, deptCRPath);
+      const existingCRSnap = await getDocs(query(existingCRCol, where('active', '==', true)));
+
+      existingCRSnap.docs.forEach(oldCRDoc => {
+        const oldData = oldCRDoc.data();
+        if (oldData.slot === slot || oldCRDoc.id === (slot === 'CR-1' ? 'cr_1' : 'cr_2')) {
+          batch.set(oldCRDoc.ref, { active: false, replacedAt: serverTimestamp() }, { merge: true });
+
+          // Also cleanup the old CR's user document flags if we have the UID
+          if (oldData.uid && oldData.uid !== crUserId) {
+            batch.set(doc(db, 'users', oldData.uid), {
+              role: 'student',
+              isCR: false,
+              crCredentials: deleteField(),
+              crPosition: deleteField(),
+              crYear: deleteField(),
+              crDepartment: deleteField(),
+              disabledAt: serverTimestamp()
+            }, { merge: true });
+          }
+        }
+      });
+
+      // 1. Mark student as representative in the student list
+      const yearStudentRef = doc(db, deptStudentPath, studentId);
+      batch.set(
+        yearStudentRef,
+        {
+          isRepresentative: true,
+          crEmail: normalizedEmail,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      // 2. Add/Update the CR record in the classrepresentative collection (for dashboard/lookup/saved credentials)
+      const crDocId = slot === 'CR-1' ? 'cr_1' : 'cr_2';
+      const deptCRRef = doc(db, deptCRPath, crDocId);
+
+      const crRecordData = {
+        id: crDocId,
         studentId: studentId,
+        uid: crUserId,
         name: studentName,
-        email: normalizedEmail.toLowerCase(), // Ensure lowercase
-        year: selectedYear,
+        email: normalizedEmail,
+        year: `year_${selectedYear}`,
+        crYear: `Year ${selectedYear}`,
         departmentId: dept,
         departmentName: departmentName || dept,
         assignedAt: serverTimestamp(),
         assignedBy: facultyId,
         active: true,
-        authUid: crUserId,
-        collegeId: collegeId,
-        password: authMethod === 'reset' ? 'PASSWORD_RESET_REQUIRED' : crPassword, // Store actual password only if it works
-        passwordNote: authMethod === 'reset' ? `Password reset email sent. CR must check email and set new password.` : 'Use the password shown during assignment',
-        authMethod: authMethod, // 'created', 'reset', or 'existing'
-        isNewUser: isNewUser
+        slot: slot,
+        password: tempPasswordForAlert || (resetEmailSent ? 'PASSWORD_RESET_REQUIRED' : '(existing account)'),
+        passwordNote: isNewAccount ? 'new' : (resetEmailSent ? 'Automatic reset email sent' : 'existing'),
       };
+      batch.set(deptCRRef, crRecordData, { merge: true });
 
-      console.log('📝 Creating CR record:', {
-        path: deptRepsPath,
-        email: normalizedEmail.toLowerCase(),
-        year: selectedYear,
-        dept: dept,
-        active: true
-      });
-
-      // Use addDoc to auto-generate document ID
-      const { students: deptStudentPath } = buildDeptPaths(selectedYear);
-      const newCRDocRef = await addDoc(crCollectionRef, newCRData);
-
-      console.log('✅ CR record created with ID:', newCRDocRef.id);
-
-      // 6. Update student document to mark as representative
-      const yearStudentRef = doc(db, deptStudentPath, studentId);
-      batch.set(yearStudentRef, {
-        isRepresentative: true,
-        crEmail: normalizedEmail,
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
-
-      // 7. Save to users collection for role lookup
-      batch.set(doc(db, 'users', crUserId), {
-        email: normalizedEmail,
-        name: studentName,
-        role: 'class_representative',
-        collegeId,
-        departmentCode: dept,
-        departmentId: dept,
-        departmentName: departmentName || dept,
-        year: selectedYear,
-        linkedStudentId: studentId,
-        active: true
-      }, { merge: true });
+      // 3. Set CR flags on user profile (source of truth for login)
+      batch.set(
+        doc(db, 'users', crUserId),
+        {
+          email: normalizedEmail,
+          name: studentName,
+          role: 'cr',
+          role_level: 'cr',
+          isCR: true,
+          active: true,
+          collegeId,
+          departmentCode: dept,
+          departmentId: dept,
+          departmentName: departmentName || dept,
+          currentYear: selectedYear,
+          crYear: `Year ${selectedYear}`,
+          crPosition: slot === 'CR-1' ? 1 : 2,
+          crDepartment: dept,
+          currentAcademicYear: getCurrentAcademicYear(),
+          linkedStudentId: studentId,
+          // Save credentials for "View Saved Credentials" 
+          crCredentials: {
+            email: normalizedEmail,
+            password: tempPasswordForAlert || (resetEmailSent ? 'PASSWORD_RESET_REQUIRED' : '(existing account)'),
+            year: `Year ${selectedYear}`,
+            createdAt: serverTimestamp(),
+            accountStatus: isNewAccount ? 'new' : 'existing',
+          },
+        },
+        { merge: true }
+      );
 
       await batch.commit();
 
@@ -1693,30 +1841,45 @@ const StudentManagementScreen = () => {
       cacheRef.current[cacheKeyFor(selectedYear)] = null;
       await loadStudentsAndCR(true);
 
-      Alert.alert(
-        '✅ Class Representative Assigned',
-        isNewUser
-          ? `${studentName} is now Class Representative!\n\n📧 Email: ${normalizedEmail}\n🔑 Password: ${crPassword}\n\n⚠️ Share these credentials securely.\n\nCR can login immediately with these credentials.\n\n✓ New account created\n✓ Old credentials invalidated`
-          : authMethod === 'reset'
-            ? `${studentName} has been reassigned as Class Representative!\n\n📧 Email: ${normalizedEmail}\n\n⚠️ CRITICAL INSTRUCTIONS:\n\nA password reset email has been sent to ${normalizedEmail}\n\nCR CANNOT login with old password!\n\nCR MUST:\n1. Check email inbox\n2. Click "Reset Password" link\n3. Set a NEW password\n4. Login with the NEW password\n\nThe old password will NOT work.\n\n✓ Old credentials invalidated\n✓ Password reset email sent`
-            : `${studentName} has been reassigned as Class Representative!\n\n📧 Email: ${normalizedEmail}\n🔑 Password: ${crPassword}\n\n⚠️ Share these credentials securely.\n\n✓ Account updated\n✓ Old credentials invalidated`
-      );
+      if (isNewAccount) {
+        Alert.alert(
+          '✔ CR Assigned Successfully',
+          `Email: ${normalizedEmail}\n\nPassword: ${tempPasswordForAlert}\n\n⚠️ Share these credentials with the CR securely.`
+        );
+      } else if (resetEmailSent) {
+        Alert.alert(
+          '✔ CR Assigned Successfully',
+          `Email: ${normalizedEmail}\n\nExisting account - A password reset email has been sent automatically.\n\nThe CR must check their email to set a new password.`
+        );
+      } else {
+        Alert.alert(
+          '✔ CR Assigned Successfully',
+          `Email: ${normalizedEmail}\n\nExisting account - Password remains unchanged.\n\nYou may need to use "Send Password Reset" manually if requested.`
+        );
+      }
     } catch (error) {
       console.error('Assign CR error:', error);
       Alert.alert('Error', `Failed to assign Class Representative: ${error.message}`);
     } finally {
       setLoading(false);
     }
-  }, [facultyId, collegeId, departmentId, departmentCode, departmentName, selectedYear, loadStudentsAndCR]);
+  }, [facultyId, collegeId, departmentId, departmentCode, departmentName, selectedYear, loadStudentsAndCR, buildDeptPaths]);
 
 
   const handleAssignCR = useCallback((student) => {
+    const yearTitle = getYearTitle(selectedYear);
+
+    // Smart slot selection
+    const isSlot1Empty = !classRepresentatives.cr1;
+    const isSlot2Empty = !classRepresentatives.cr2;
+    const targetSlot = isSlot1Empty ? 'CR-1' : (isSlot2Empty ? 'CR-2' : 'CR-1');
+
     Alert.alert(
       'Assign Class Representative',
-      `Make ${student.name || student.firstName || 'student'} the Class Representative for ${YEARS.find(y => y.id === selectedYear)?.label}? This will replace any active representative for this class.`,
+      `Make ${student.name || student.firstName || 'student'} the ${targetSlot} for ${yearTitle}?`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Assign', onPress: () => assignCRToSlot('CR-1', student) },
+        { text: 'Assign', onPress: () => assignCRToSlot(targetSlot, student) },
       ]
     );
   }, [assignCRToSlot, classRepresentatives, selectedYear]);
@@ -1724,7 +1887,7 @@ const StudentManagementScreen = () => {
   const handleDeactivateCR = useCallback((slot) => {
     Alert.alert(
       'Deactivate CR',
-      `Deactivate ${slot} for ${YEARS.find(y => y.id === selectedYear)?.label}?`,
+      `Deactivate ${slot} for ${getYearTitle(selectedYear)}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -1749,14 +1912,41 @@ const StudentManagementScreen = () => {
               const batch = writeBatch(db);
               const nowIso = new Date().toISOString();
 
+              // 1. Mark student document
               const studentRef = doc(db, deptStudentPath, currentCR.studentId);
               batch.set(studentRef, { isRepresentative: false, updatedAt: nowIso }, { merge: true });
 
-              const repRef = doc(db, deptCRPath, currentCR.studentId);
-              batch.set(repRef, { active: false, revokedAt: nowIso, revokedBy: facultyId || null }, { merge: true });
+              // 2. Exhaustive deactivation in tracking collection
+              const repsRef = collection(db, deptCRPath);
+              const repsSnap = await getDocs(repsRef);
 
+              repsSnap.docs.forEach(repDoc => {
+                const data = repDoc.data();
+                if (data.studentId === currentCR.studentId || (currentCR.email && data.email === currentCR.email)) {
+                  batch.set(repDoc.ref, {
+                    active: false,
+                    revokedAt: serverTimestamp(),
+                    status: 'deactivated'
+                  }, { merge: true });
+                }
+              });
+
+              // 3. Clear user profile flags
               if (currentCR.uid) {
-                batch.set(doc(db, 'users', currentCR.uid), { role: 'class_representative', isRepActive: false, revokedAt: nowIso }, { merge: true });
+                batch.set(
+                  doc(db, 'users', currentCR.uid),
+                  {
+                    role: 'student',
+                    isCR: false,
+                    active: true,
+                    revokedAt: nowIso,
+                    crCredentials: deleteField(),
+                    crPosition: deleteField(),
+                    crYear: deleteField(),
+                    crDepartment: deleteField()
+                  },
+                  { merge: true }
+                );
               }
 
               await batch.commit();
@@ -1780,7 +1970,7 @@ const StudentManagementScreen = () => {
   const handleDeleteCR = useCallback((slot) => {
     Alert.alert(
       'Delete CR',
-      `Permanently delete ${slot} for ${YEARS.find(y => y.id === selectedYear)?.label}? This cannot be undone.`,
+      `Permanently delete ${slot} for ${getYearTitle(selectedYear)}? This cannot be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -1805,13 +1995,41 @@ const StudentManagementScreen = () => {
               const batch = writeBatch(db);
               const nowIso = new Date().toISOString();
 
+              // 1. Mark student document
               const studentRef = doc(db, deptStudentPath, currentCR.studentId);
               batch.set(studentRef, { isRepresentative: false, updatedAt: nowIso }, { merge: true });
 
-              batch.delete(doc(db, deptCRPath, currentCR.studentId));
+              // 2. Exhaustive cleanup in tracking collection
+              const repsRef = collection(db, deptCRPath);
+              const repsSnap = await getDocs(repsRef);
 
+              repsSnap.docs.forEach(repDoc => {
+                const data = repDoc.data();
+                if (data.studentId === currentCR.studentId || (currentCR.email && data.email === currentCR.email)) {
+                  batch.set(repDoc.ref, {
+                    active: false,
+                    deletedAt: serverTimestamp(),
+                    status: 'deleted'
+                  }, { merge: true });
+                }
+              });
+
+              // 3. Clear user profile
               if (currentCR.uid) {
-                batch.set(doc(db, 'users', currentCR.uid), { isRepActive: false, role: 'class_representative', revokedAt: nowIso }, { merge: true });
+                batch.set(
+                  doc(db, 'users', currentCR.uid),
+                  {
+                    isCR: false,
+                    role: 'student',
+                    active: true,
+                    revokedAt: nowIso,
+                    crCredentials: deleteField(),
+                    crPosition: deleteField(),
+                    crYear: deleteField(),
+                    crDepartment: deleteField()
+                  },
+                  { merge: true }
+                );
               }
 
               await batch.commit();
@@ -1853,33 +2071,49 @@ const StudentManagementScreen = () => {
         {
           text: 'View Credentials',
           onPress: async () => {
+            if (!cr || !cr.uid) {
+              Alert.alert('Error', 'CR user ID not found.');
+              return;
+            }
             try {
               setLoading(true);
-              const { reps: deptCRPath } = buildDeptPaths(selectedYear);
-              const credentialsPath = `${deptCRPath}/credentials`;
-              const credDocId = `${slot}_${currentCR?.studentId || selectedYear}`;
-              const credDoc = await getDoc(doc(db, credentialsPath, credDocId));
+              const userDocRef = doc(db, 'users', cr.uid);
+              const userSnap = await getDoc(userDocRef);
 
-              if (credDoc.exists()) {
-                const credData = credDoc.data();
-                const passwordWorks = credData.passwordWorks !== false;
-                const requiresReset = credData.requiresPasswordReset === true;
+              if (userSnap.exists()) {
+                const userData = userSnap.data();
+                const creds = userData.crCredentials;
 
-                if (!passwordWorks || requiresReset) {
+                if (creds) {
+                  const status = creds.accountStatus === 'new' ? '✅ Ready to Login' : '⚠️ Existing Account';
+                  const rawPwd = creds.password || creds.tempPassword || 'N/A';
+                  const isResetRequired = rawPwd === 'PASSWORD_RESET_REQUIRED';
+                  const isExisting = rawPwd === '(existing account)';
+
+                  let actionNote = '';
+                  let displayPwd = rawPwd;
+
+                  if (creds.accountStatus === 'new') {
+                    actionNote = 'CR can log in with these credentials immediately.';
+                  } else if (isResetRequired) {
+                    displayPwd = 'Password set by CR via reset link';
+                    actionNote = 'A password reset link has been sent to the CR email. They must set a new password before logging in.';
+                  } else if (isExisting) {
+                    displayPwd = 'Password managed by user';
+                    actionNote = 'Use "Send Password Reset" to let CR set a new password.';
+                  } else {
+                    actionNote = 'Use "Send Password Reset" to let CR set a new password.';
+                  }
+
                   Alert.alert(
-                    `${slot} Status - ⚠️ Login Blocked`,
-                    `Email: ${credData.email}\nGenerated Password: ${credData.password || 'N/A'}\n\n❌ This password WILL NOT WORK for login.\n\nREASON: Email already exists in Firebase Auth\n\nTO FIX:\n1. Tap "Send Password Reset" below\n2. CR checks email inbox\n3. CR clicks reset link and sets new password\n4. CR can then log in with new password\n\nThe generated password is for reference only.`,
-                    [{ text: 'OK' }]
+                    `Saved CR Credentials`,
+                    `CR Name: ${userData.name || 'N/A'}\nEmail: ${creds.email || 'N/A'}\nPassword: ${displayPwd}\n\nStatus: ${status}\n\n${actionNote}`
                   );
                 } else {
-                  Alert.alert(
-                    `${slot} Credentials - ✅ Ready`,
-                    `Email: ${credData.email}\nPassword: ${credData.password || 'N/A'}\n\n✅ CR can log in with these credentials immediately.\n\nIf they report login issues, use "Send Password Reset" to help them.`,
-                    [{ text: 'OK' }]
-                  );
+                  Alert.alert('No Credentials', 'No credentials found. This CR may have been assigned before the credential system was implemented.');
                 }
               } else {
-                Alert.alert('Not Found', 'No credentials found. Use "Send Password Reset" to send the rep a password reset email.');
+                Alert.alert('Error', 'User document not found.');
               }
             } catch (error) {
               console.error('Error fetching credentials:', error);
@@ -1900,10 +2134,13 @@ const StudentManagementScreen = () => {
               setLoading(true);
               const secondaryAuth = getSecondaryAuth();
               await sendPasswordResetEmail(secondaryAuth, cr.email);
-              Alert.alert('Password Reset Sent', `A password reset email has been sent to ${cr.email}. The rep must check their email and set a new password.`);
+              Alert.alert(
+                'Password Reset Sent',
+                `A password reset email has been sent to ${cr.email}.\n\nThe CR must check their email and set a new password.`
+              );
             } catch (error) {
               console.error('Error sending password reset:', error);
-              Alert.alert('Error', 'Failed to send password reset email. The account may not exist in Firebase Auth.');
+              Alert.alert('Error', `Failed to send password reset email.\n\n${error.message}`);
             } finally {
               setLoading(false);
             }
@@ -1913,23 +2150,28 @@ const StudentManagementScreen = () => {
         { text: 'Delete', onPress: () => handleDeleteCR(slot), style: 'destructive' },
       ]
     );
-  }, [classRepresentatives, handleDeactivateCR, handleDeleteCR, collegeId, departmentId, selectedYear, getSecondaryAuth]);
+  }, [classRepresentatives, handleDeactivateCR, handleDeleteCR, collegeId, departmentId, selectedYear]);
 
   const handleSelectCR = useCallback(async (student) => {
-    const yearLabel = YEARS.find(y => y.id === selectedYear)?.label || selectedYear;
+    const yearLabel = getYearTitle(selectedYear);
+
+    // Determine target slot based on availability to avoid overwriting CR-1
+    const isSlot1Empty = !classRepresentatives.cr1;
+    const isSlot2Empty = !classRepresentatives.cr2;
+    const targetSlot = isSlot1Empty ? 'CR-1' : (isSlot2Empty ? 'CR-2' : 'CR-1');
 
     Alert.alert(
       'Assign Class Representative',
-      `Assign ${student.name} as Class Representative for ${yearLabel}? Old reps for this class will be deactivated automatically.`,
+      `Assign ${student.name} as ${targetSlot} for ${yearLabel}?`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Assign', onPress: () => assignCRToSlot('CR-1', student) },
+        { text: 'Assign', onPress: () => assignCRToSlot(targetSlot, student) },
       ]
     );
-  }, [assignCRToSlot, selectedYear]);
+  }, [assignCRToSlot, selectedYear, classRepresentatives]);
 
   const handleReplaceCR = useCallback(async (slotName, student) => {
-    const yearLabel = YEARS.find(y => y.id === selectedYear)?.label || selectedYear;
+    const yearLabel = getYearTitle(selectedYear);
     const crToReplace = slotName === 'CR-1' ? classRepresentatives.cr1 : classRepresentatives.cr2;
 
     Alert.alert(
@@ -1949,27 +2191,56 @@ const StudentManagementScreen = () => {
                 return;
               }
 
-              // First deactivate the old CR
-              const { reps: deptCRPath } = buildDeptPaths(selectedYear);
-              const crCollectionRef = collection(db, deptCRPath);
-              const oldCRQuery = query(
-                crCollectionRef,
-                where('email', '==', crToReplace.email.toLowerCase()),
-                where('active', '==', true)
-              );
-              const oldCRSnapshot = await getDocs(oldCRQuery);
+              // First remove CR flag from the old CR user/student
+              const { students: deptStudentPath, reps: deptCRPath } = buildDeptPaths(selectedYear);
+
+              // 1. Exhaustive sweep for tracking records of the old CR
+              const repsRef = collection(db, deptCRPath);
+              const repsSnap = await getDocs(repsRef);
 
               const batch = writeBatch(db);
-              oldCRSnapshot.forEach(docSnap => {
-                batch.update(docSnap.ref, {
-                  active: false,
-                  deactivatedAt: serverTimestamp(),
-                  deactivatedBy: facultyId
-                });
+
+              repsSnap.docs.forEach(repDoc => {
+                const data = repDoc.data();
+                if (data.studentId === crToReplace?.studentId || data.email === crToReplace?.email) {
+                  batch.set(repDoc.ref, {
+                    active: false,
+                    replacedAt: serverTimestamp(),
+                    statusNote: `Replaced by ${student.name}`
+                  }, { merge: true });
+                }
               });
+
+              // 2. Clear student document flags
+              if (crToReplace?.studentId) {
+                batch.set(
+                  doc(db, deptStudentPath, crToReplace.studentId),
+                  { isRepresentative: false, updatedAt: serverTimestamp() },
+                  { merge: true }
+                );
+              }
+
+              // 3. Ensure fixed ID record is inactive
+              const crDocId = slotName === 'CR-1' ? 'cr_1' : 'cr_2';
+              batch.set(doc(db, deptCRPath, crDocId), { active: false, replacedAt: serverTimestamp() }, { merge: true });
+
+              // 4. Clear user profile credentials
+              if (crToReplace?.uid) {
+                batch.set(
+                  doc(db, 'users', crToReplace.uid),
+                  {
+                    isCR: false,
+                    role: 'student',
+                    active: true,
+                    revokedAt: serverTimestamp(),
+                    crCredentials: deleteField()
+                  },
+                  { merge: true }
+                );
+              }
               await batch.commit();
 
-              // Now assign the new CR (will create a new document)
+              // Now assign the new CR (flags only)
               setLoading(false);
               await assignCRToSlot(slotName, student);
             } catch (error) {
@@ -1999,7 +2270,7 @@ const StudentManagementScreen = () => {
       const activeReps = snapshot.docs.filter(doc => doc.data().active === true);
 
       if (activeReps.length === 0) {
-        Alert.alert('No Credentials', `No active CR credentials for ${YEARS.find(y => y.id === selectedYear)?.label || selectedYear}`);
+        Alert.alert('No Credentials', `No active CR credentials for ${getYearTitle(selectedYear)}`);
         setLoading(false);
         return;
       }
@@ -2008,7 +2279,7 @@ const StudentManagementScreen = () => {
       const credentialsList = activeReps.map((doc, idx) => {
         const data = doc.data();
         return {
-          slot: `CR ${idx + 1}`,
+          slot: data.slot || `CR ${idx + 1}`,
           email: data.email,
           password: data.password,
           passwordNote: data.passwordNote,
@@ -2018,7 +2289,7 @@ const StudentManagementScreen = () => {
         };
       });
 
-      const yearLabel = YEARS.find(y => y.id === selectedYear)?.label || selectedYear;
+      const yearLabel = getYearTitle(selectedYear);
       setSavedCredentials(credentialsList);
       setCredentialsYearLabel(yearLabel);
       setCredentialsModalVisible(true);
@@ -2031,9 +2302,15 @@ const StudentManagementScreen = () => {
   }, [collegeId, departmentId, departmentCode, selectedYear]);
 
   const buildCredentialMessage = useCallback((cred) => {
-    const passwordLine = cred.password === 'PASSWORD_RESET_REQUIRED'
-      ? 'Action: Reset password from the reset email link.'
-      : `Temporary Password: ${cred.password}`;
+    let passwordLine = '';
+    if (cred.password === 'PASSWORD_RESET_REQUIRED') {
+      passwordLine = 'Action: Password set by CR via reset link.';
+    } else if (cred.password === '(existing account)') {
+      passwordLine = 'Action: Password managed by user.';
+    } else {
+      passwordLine = `Temporary Password: ${cred.password}`;
+    }
+
     const noteLine = cred.passwordNote ? `\nNote: ${cred.passwordNote}` : '';
     const authMethodLine = cred.authMethod ? `\nAuth Method: ${cred.authMethod}` : '';
 
@@ -2094,31 +2371,52 @@ const StudentManagementScreen = () => {
 
               const { students: deptStudentPath, reps: deptCRPath } = buildDeptPaths(selectedYear);
 
-              // Find and deactivate CR document by email (CRs are stored with auto-generated IDs)
-              const crCollectionRef = collection(db, deptCRPath);
-              const crQuery = query(
-                crCollectionRef,
-                where('email', '==', normalizedEmail.toLowerCase()),
-                where('active', '==', true)
-              );
-              const crSnapshot = await getDocs(crQuery);
+              // 1. Comprehensive search for all tracking records for this student
+              const repsRef = collection(db, deptCRPath);
+              const repsSnap = await getDocs(repsRef);
 
               const batch = writeBatch(db);
 
-              // Deactivate all matching CR records
-              crSnapshot.forEach(docSnap => {
-                batch.update(docSnap.ref, {
-                  active: false,
-                  deactivatedAt: serverTimestamp(),
-                  deactivatedBy: facultyId
-                });
+              // 2. Deactivate any record matching this student's ID or Email
+              repsSnap.docs.forEach(repDoc => {
+                const data = repDoc.data();
+                if (data.studentId === student.id || data.email === normalizedEmail) {
+                  batch.set(repDoc.ref, {
+                    active: false,
+                    revokedAt: serverTimestamp(),
+                    statusNote: 'Removed by faculty'
+                  }, { merge: true });
+                }
               });
 
-              // Update student document to remove CR status
-              batch.update(doc(db, deptStudentPath, student.id), {
-                isRepresentative: false,
-                updatedAt: serverTimestamp(),
-              });
+              // 3. Update student document to remove CR status
+              batch.set(
+                doc(db, deptStudentPath, student.id),
+                { isRepresentative: false, updatedAt: serverTimestamp() },
+                { merge: true }
+              );
+
+              // 4. Lookup user by email to clear flags and credentials
+              const usersRef = collection(db, 'users');
+              const userQuery = query(usersRef, where('email', '==', normalizedEmail));
+              const userSnap = await getDocs(userQuery);
+
+              if (!userSnap.empty) {
+                batch.set(
+                  doc(db, 'users', userSnap.docs[0].id),
+                  {
+                    isCR: false,
+                    role: 'student',
+                    active: true,
+                    disabledAt: serverTimestamp(),
+                    crCredentials: deleteField(),
+                    crPosition: deleteField(),
+                    crYear: deleteField(),
+                    crDepartment: deleteField()
+                  },
+                  { merge: true }
+                );
+              }
 
               await batch.commit();
 
@@ -2137,7 +2435,7 @@ const StudentManagementScreen = () => {
         }
       ]
     );
-  }, [collegeId, departmentId, selectedYear, facultyId, loadStudentsAndCR]);
+  }, [collegeId, departmentId, departmentCode, selectedYear, facultyId, loadStudentsAndCR, buildDeptPaths]);
 
 
 
@@ -2156,7 +2454,21 @@ const StudentManagementScreen = () => {
           <Ionicons name="chevron-back" size={24} color="#ffffff" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{showSubMenu ? 'Student Management' : 'Student Management'}</Text>
-        <View style={{ width: 24 }} />
+        {!showSubMenu && (
+          <TouchableOpacity
+            style={styles.headerIconButton}
+            onPress={handlePromoteAcademicYear}
+            disabled={promoting}
+            activeOpacity={0.7}
+          >
+            {promoting ? (
+              <ActivityIndicator size="small" color="#ffffff" />
+            ) : (
+              <Ionicons name="trending-up" size={20} color="#ffffff" />
+            )}
+          </TouchableOpacity>
+        )}
+        {showSubMenu && <View style={{ width: 24 }} />}
       </View>
 
       {/* Sub-Menu View */}
@@ -2226,17 +2538,20 @@ const StudentManagementScreen = () => {
               decelerationRate="fast"
               scrollEventThrottle={16}
             >
-              {YEARS.map(year => (
-                <TouchableOpacity
-                  key={year.id}
-                  style={[styles.pill, selectedYear === year.id && styles.pillActive]}
-                  onPress={() => setSelectedYear(year.id)}
-                >
-                  <Text style={[styles.pillText, selectedYear === year.id && styles.pillTextActive]}>
-                    {year.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+              {yearOptions.map(yearMeta => {
+                // Mapping: Year 1 = baseYear, Year 2 = baseYear - 1, Year 3 = baseYear - 2, Year 4 = baseYear - 3
+                return (
+                  <TouchableOpacity
+                    key={yearMeta.currentYear}
+                    style={[styles.pill, selectedYear === yearMeta.currentYear && styles.pillActive]}
+                    onPress={() => setSelectedYear(yearMeta.currentYear)}
+                  >
+                    <Text style={[styles.pillText, selectedYear === yearMeta.currentYear && styles.pillTextActive]}>
+                      Year {yearMeta.currentYear} – {yearMeta.academicYear}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
 
             <View style={styles.contextMetaRow}>
@@ -2246,6 +2561,8 @@ const StudentManagementScreen = () => {
                 {getActiveDepartmentCode() ? ` (${getActiveDepartmentCode()})` : ''}
               </Text>
             </View>
+
+
 
             {/* Main Action Buttons */}
             {!showStudentView && !showCRView ? (
@@ -2284,7 +2601,7 @@ const StudentManagementScreen = () => {
                   <View style={styles.sectionHeader}>
                     <Text style={styles.sectionTitle}>Student List</Text>
                     <Text style={styles.sectionSubtitle}>
-                      {(departmentName || getActiveDepartmentCode() || 'Department')} • {(YEARS.find(y => y.id === selectedYear)?.label || selectedYear)}
+                      {(departmentName || getActiveDepartmentCode() || 'Department')}
                     </Text>
                   </View>
 
@@ -2579,9 +2896,14 @@ const StudentManagementScreen = () => {
                   </View>
 
                   {cred.password === 'PASSWORD_RESET_REQUIRED' ? (
-                    <Text style={styles.credResetNote}>
-                      Password reset email sent. CR must open the reset link to set a new password.
-                    </Text>
+                    <>
+                      <Text style={styles.credPassword}>Password: Set by CR via reset link</Text>
+                      <Text style={styles.credResetNote}>
+                        Password reset email sent. CR must open the reset link to set a new password.
+                      </Text>
+                    </>
+                  ) : cred.password === '(existing account)' ? (
+                    <Text style={styles.credPassword}>Password: Managed by user</Text>
                   ) : (
                     <Text style={styles.credPassword}>Temp Password: {cred.password}</Text>
                   )}
@@ -2616,6 +2938,13 @@ const StudentManagementScreen = () => {
           </View>
         </View>
       </Modal>
+      {/* Promotion Progress Indicator */}
+      {promoting && (
+        <View style={styles.promoLoadingOverlay}>
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.promoLoadingText}>Promoting Academic Year... Please wait.</Text>
+        </View>
+      )}
     </SafeAreaView>
   );
 };
@@ -2624,6 +2953,19 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8f9fa',
+  },
+  promoLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  promoLoadingText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 16,
   },
   subMenuContent: {
     flexGrow: 1,
@@ -2700,6 +3042,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#ffffff',
+  },
+  headerIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   scrollContent: {
     flex: 1,

@@ -13,11 +13,17 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { getYearDisplayLabel } from '../constants/academicYear';
 
 const AttendanceManagementScreen = () => {
   const navigation = useNavigation();
   const params = useLocalSearchParams();
   const { classId, year } = params;
+
+  // Format year for display (e.g., Year 1 -> Year 1 – 2025)
+  const displayYear = year?.startsWith('Year ')
+    ? getYearDisplayLabel(year.replace('Year ', ''))
+    : year;
 
   // Hardware back: go to previous screen if possible
   useFocusEffect(
@@ -217,7 +223,7 @@ const AttendanceManagementScreen = () => {
       </View>
 
       <View style={styles.classInfo}>
-        <Text style={styles.classInfoText}>{year} - Class {classId}</Text>
+        <Text style={styles.classInfoText}>{displayYear} - Class {classId}</Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>

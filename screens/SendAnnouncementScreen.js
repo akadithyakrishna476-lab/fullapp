@@ -17,6 +17,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/firebaseConfig';
 import { fetchUserRole } from '../utils/authHelpers';
+import { getYearDisplayLabel } from '../constants/academicYear';
 
 const normalizeRole = (value) => (value || '').toString().toLowerCase();
 
@@ -41,10 +42,10 @@ const formatDateTime = (timestamp) => {
 
 const YEARS = [
   { id: 'all', label: 'All Years' },
-  { id: 'year1', label: 'Year 1' },
-  { id: 'year2', label: 'Year 2' },
-  { id: 'year3', label: 'Year 3' },
-  { id: 'year4', label: 'Year 4' },
+  { id: 'year1', label: getYearDisplayLabel(1) },
+  { id: 'year2', label: getYearDisplayLabel(2) },
+  { id: 'year3', label: getYearDisplayLabel(3) },
+  { id: 'year4', label: getYearDisplayLabel(4) },
 ];
 
 const SendAnnouncementScreen = () => {

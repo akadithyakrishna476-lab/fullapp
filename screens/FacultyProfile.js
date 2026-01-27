@@ -100,30 +100,8 @@ const FacultyProfile = () => {
   );
 
   const handleChangePassword = () => {
-    Alert.alert(
-      'Change Password',
-      'Do you want to proceed with changing your password?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Continue',
-          onPress: async () => {
-            try {
-              const user = auth.currentUser;
-              if (!user || !user.email) {
-                Alert.alert('Error', 'No email available for password reset.');
-                return;
-              }
-              await sendPasswordResetEmail(auth, user.email);
-              Alert.alert('Password Reset', 'A password reset email was sent to your address.');
-            } catch (e) {
-              console.warn('Password reset failed', e);
-              Alert.alert('Error', 'Failed to send password reset email.');
-            }
-          },
-        },
-      ]
-    );
+    // Navigate to faculty password change screen
+    router.push('/faculty-password-change');
   };
 
   const handleEditProfile = () => {

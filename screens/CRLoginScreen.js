@@ -2,8 +2,8 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { signInWithEmailAndPassword, signOut } from 'firebase/auth';
-import { collection, getDocs, query, where, doc, getDoc } from 'firebase/firestore';
-import React, { useState } from 'react';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -35,119 +35,91 @@ const CRLoginScreen = () => {
       const normalizedEmail = userEmail.toLowerCase().trim();
       console.log('🔍 Validating CR access for:', normalizedEmail);
       console.log('   Auth UID:', userUid);
-      
+
       // STEP 1: Check users collection for CR metadata (fastest path)
       console.log('📋 Checking users collection for CR metadata...');
       const userDocRef = doc(db, 'users', userUid);
       const userSnap = await getDoc(userDocRef);
-      
+
+      let userData = null;
       if (userSnap.exists()) {
-        const userData = userSnap.data();
-        console.log('✅ Found user record:', {
+        userData = userSnap.data();
+        console.log('✅ Found user record by UID');
+      } else {
+        console.log('⚠️ No record found by UID, attempting email query fallback...');
+        const usersRef = collection(db, 'users');
+        const emailQuery = query(usersRef, where('email', '==', normalizedEmail));
+        const emailSnap = await getDocs(emailQuery);
+
+        if (!emailSnap.empty) {
+          userData = emailSnap.docs[0].data();
+          console.log('✅ Found user record by Email');
+        }
+      }
+
+      if (userData) {
+        console.log('📊 Found User Data fields:', {
           role: userData.role,
-          year: userData.year,
-          departmentCode: userData.departmentCode,
-          departmentId: userData.departmentId,
+          role_level: userData.role_level,
+          isCR: userData.isCR,
           active: userData.active
         });
-        
-        // Check if this is a CR and is active
-        if (userData.role === 'class_representative' && userData.active === true) {
-          let year = userData.year; // e.g., "year_1" or "year1"
-          let deptCode = userData.departmentCode || userData.departmentId; // e.g., "CSE"
-          
-          // Normalize year format to match Firestore collection name (year1, year2, etc.)
-          if (year && year.includes('_')) {
-            year = year.replace('_', ''); // year_1 → year1
-          }
-          
-          // Handle case where departmentId is a document ID instead of code
-          if (deptCode && deptCode.length > 10) {
-            const deptName = userData.departmentName || '';
-            if (deptName.toLowerCase().includes('information technology')) {
-              deptCode = 'IT';
-            } else if (deptName.toLowerCase().includes('computer science')) {
-              deptCode = 'CSE';
-            } else if (deptName.toLowerCase().includes('electronics')) {
-              deptCode = 'ECE';
-            } else if (deptName.toLowerCase().includes('electrical')) {
-              deptCode = 'EEE';
-            } else if (deptName.toLowerCase().includes('mechanical')) {
-              deptCode = 'MECH';
-            } else if (deptName.toLowerCase().includes('civil')) {
-              deptCode = 'CIVIL';
-            }
-            console.log('📝 Extracted dept code from name:', deptCode);
-          }
-          
-          // STEP 2: Verify in correct nested collection path
-          console.log(`🔍 Verifying in: classRepresentatives/${year}/departments/${deptCode}/reps`);
-          
-          const crCollectionRef = collection(
-            db,
-            'classRepresentatives',
-            year,
-            'departments',
-            deptCode,
-            'reps'
-          );
-          
-          const q = query(
-            crCollectionRef,
-            where('email', '==', normalizedEmail),
-            where('active', '==', true)
-          );
-          
-          const snapshot = await getDocs(q);
-          console.log(`   Found ${snapshot.size} active CR records`);
-          
-          if (!snapshot.empty) {
-            const crDoc = snapshot.docs[0];
-            const crData = {
-              id: crDoc.id,
-              ...crDoc.data()
-            };
-            
-            console.log('✅ CR VALIDATION SUCCESS:', {
-              name: crData.name,
-              year: crData.year,
-              department: crData.departmentName,
-              active: crData.active
-            });
-            
-            return {
-              isValid: true,
-              crData: crData,
-              message: 'Valid CR access'
-            };
-          } else {
-            console.log('❌ No active CR found in reps collection');
-            return {
-              isValid: false,
-              crData: null,
-              message: 'CR record not found or inactive'
-            };
-          }
-        } else {
-          console.log('❌ User is not an active CR:', {
-            role: userData.role,
-            active: userData.active
+
+        const roleStr = String(userData.role || '').toLowerCase();
+        const isCRFlag = !!userData.isCR;
+        const roleLevel = String(userData.role_level || '').toLowerCase();
+        const isCRRole = roleStr === 'cr' || roleStr.indexOf('cr') > -1 || roleStr.indexOf('class_representative') > -1 || roleLevel === 'cr';
+
+        console.log('📊 CR Validation Checks:', {
+          roleStr,
+          isCRFlag,
+          roleLevel,
+          isCRRole,
+          finalResult: isCRFlag || isCRRole
+        });
+
+        if (isCRFlag || isCRRole) {
+          const crData = {
+            id: userUid,
+            name: userData.name || userEmail || '',
+            email: normalizedEmail || '',
+            year: userData.year || 'year_1',
+            currentYear: parseInt(userData.currentYear || userData.year_level || 1, 10),
+            departmentName: userData.crDepartment || userData.departmentName || '',
+            departmentId: userData.departmentCode || userData.departmentId || '',
+            isCR: true,
+            role: 'cr',
+            studentId: userData.studentId || userData.rollNo || userData.rollNumber || ''
+          };
+
+          console.log('✅ CR VALIDATION SUCCESS:', {
+            name: crData.name,
+            year: crData.year,
+            department: crData.departmentName
           });
+
           return {
-            isValid: false,
-            crData: null,
-            message: 'You are not an active Class Representative'
+            isValid: true,
+            crData,
+            message: 'Valid CR access'
           };
         }
+
+        // Not a CR under simple rules
+        return {
+          isValid: false,
+          crData: null,
+          message: 'You are not a Class Representative'
+        };
       } else {
-        console.log('❌ User record not found in users collection');
+        console.log('❌ User record not found in users collection after all attempts');
         return {
           isValid: false,
           crData: null,
           message: 'User account not properly configured'
         };
       }
-      
+
     } catch (error) {
       console.error('❌ Error validating CR access:', error);
       return {
@@ -164,7 +136,7 @@ const CRLoginScreen = () => {
       Alert.alert('Missing Email', 'Please enter your email address');
       return;
     }
-    
+
     if (!password.trim()) {
       Alert.alert('Missing Password', 'Please enter your password');
       return;
@@ -176,23 +148,23 @@ const CRLoginScreen = () => {
       // Step 1: Firebase Authentication
       console.log('🔐 Attempting Firebase login...');
       const userCredential = await signInWithEmailAndPassword(
-        auth, 
-        email.toLowerCase().trim(), 
+        auth,
+        email.toLowerCase().trim(),
         password
       );
-      
+
       const user = userCredential.user;
       console.log('✅ Firebase auth successful:', user.email, 'UID:', user.uid);
 
       // Step 2: Firestore Validation (CRITICAL)
       console.log('🔍 Validating CR access in Firestore...');
       const validation = await validateCRAccess(user.email, user.uid);
-      
+
       if (!validation.isValid) {
         // Access denied - logout immediately
         console.error('❌ CR access denied:', validation.message);
         await signOut(auth);
-        
+
         Alert.alert(
           'Access Denied',
           validation.message + '\n\nYou must be an active Class Representative to access this portal.'
@@ -203,18 +175,18 @@ const CRLoginScreen = () => {
 
       // Step 3: Access granted - store CR data
       console.log('✅ CR access validated successfully');
-      
+
       const crData = validation.crData;
-      
+
       // Store CR session data
       await AsyncStorage.setItem('userRole', 'class_representative');
       await AsyncStorage.setItem('crData', JSON.stringify(crData));
-      await AsyncStorage.setItem('year', crData.year);
-      await AsyncStorage.setItem('departmentCode', crData.departmentId || crData.departmentCode);
-      await AsyncStorage.setItem('departmentName', crData.departmentName);
-      await AsyncStorage.setItem('studentId', crData.studentId);
-      await AsyncStorage.setItem('authUid', user.uid);
-      
+      await AsyncStorage.setItem('year', String(crData.year || 'year_1'));
+      await AsyncStorage.setItem('departmentCode', String(crData.departmentId || crData.departmentCode || ''));
+      await AsyncStorage.setItem('departmentName', String(crData.departmentName || ''));
+      await AsyncStorage.setItem('studentId', String(crData.studentId || ''));
+      await AsyncStorage.setItem('authUid', String(user.uid || ''));
+
       console.log('✅ Session stored:', {
         name: crData.name,
         year: crData.year,
@@ -238,9 +210,9 @@ const CRLoginScreen = () => {
 
     } catch (error) {
       console.error('Login error:', error);
-      
+
       let errorMessage = 'Login failed. Please try again.';
-      
+
       if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
         errorMessage = 'Invalid email or password.\n\nIf your password was recently changed, use the new credentials provided by your faculty.';
       } else if (error.code === 'auth/user-not-found') {
@@ -252,7 +224,7 @@ const CRLoginScreen = () => {
       } else if (error.message) {
         errorMessage = error.message;
       }
-      
+
       Alert.alert('Login Failed', errorMessage);
     } finally {
       setLoading(false);
@@ -265,13 +237,13 @@ const CRLoginScreen = () => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
-        <ScrollView 
+        <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
         >
           {/* Header */}
           <View style={styles.header}>
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => router.back()}
               style={styles.backButton}
             >
@@ -328,10 +300,10 @@ const CRLoginScreen = () => {
                   onPress={() => setShowPassword(!showPassword)}
                   style={styles.eyeIcon}
                 >
-                  <Ionicons 
-                    name={showPassword ? "eye-outline" : "eye-off-outline"} 
-                    size={20} 
-                    color="#7f8c8d" 
+                  <Ionicons
+                    name={showPassword ? "eye-outline" : "eye-off-outline"}
+                    size={20}
+                    color="#7f8c8d"
                   />
                 </TouchableOpacity>
               </View>

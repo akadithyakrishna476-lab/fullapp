@@ -3,17 +3,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import { sendPasswordResetEmail, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-    Alert,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Alert,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth, db } from '../firebase/firebaseConfig';
+import { getCurrentAcademicYear, getJoiningYearForLevel, getStudentDistribution, getYearDisplayLabel, loadAcademicYear, promoteAcademicYear } from '../utils/academicYearManager';
 
 const menuItems = [
   {
@@ -55,7 +56,9 @@ const FacultyDashboard = () => {
   const [facultyData, setFacultyData] = useState(null);
   const [isStaffAdvisor, setIsStaffAdvisor] = useState(false);
   const [userName, setUserName] = useState('Faculty');
-  
+  const [academicYear, setAcademicYear] = useState(2025); // Mapping Base 2025
+  const [promoting, setPromoting] = useState(false);
+
   const [profileData, setProfileData] = useState({
     name: '',
     mobile: '',
@@ -64,12 +67,12 @@ const FacultyDashboard = () => {
     department: '',
   });
   const [showYearSelector, setShowYearSelector] = useState(false);
-  
+
   const YEARS = [
-    { id: '1', label: 'Year 1' },
-    { id: '2', label: 'Year 2' },
-    { id: '3', label: 'Year 3' },
-    { id: '4', label: 'Year 4' },
+    { id: '1', label: getYearDisplayLabel(1) },
+    { id: '2', label: getYearDisplayLabel(2) },
+    { id: '3', label: getYearDisplayLabel(3) },
+    { id: '4', label: getYearDisplayLabel(4) },
   ];
 
   useEffect(() => {
@@ -77,12 +80,18 @@ const FacultyDashboard = () => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
       if (user) {
         loadFacultyData();
+        initAcademicYear();
       } else {
         setUserName('Faculty');
       }
     });
     return unsubscribe;
   }, []);
+
+  const initAcademicYear = async () => {
+    const year = await loadAcademicYear();
+    setAcademicYear(year);
+  };
 
   // Load full profile from Firestore and populate header/profile fields
   const loadFacultyData = async () => {
@@ -178,7 +187,7 @@ const FacultyDashboard = () => {
       params: { year },
     });
   };
-  
+
 
 
   const handleChangePassword = async () => {
@@ -190,9 +199,67 @@ const FacultyDashboard = () => {
       }
       await sendPasswordResetEmail(auth, user.email);
       Alert.alert('Password Reset', 'A password reset email was sent to your address.');
-    } catch (e) {
-      console.warn('Password reset failed', e);
+    } catch (error) {
+      console.error('Password reset error:', error);
       Alert.alert('Error', 'Failed to send password reset email.');
+    }
+  };
+
+  const handlePromoteAcademicYear = async () => {
+    try {
+      // Get distribution first
+      const distribution = await getStudentDistribution();
+      const year4 = distribution.find(d => d.currentYear === 4);
+      const year4Count = year4?.studentCount || 0;
+
+      const summaryLines = distribution
+        .filter(d => d.studentCount > 0)
+        .map(d => `• ${d.label}: ${d.studentCount} students`)
+        .join('\n');
+
+      Alert.alert(
+        '🎓 Promote Academic Year',
+        `This will:\n\n` +
+        `✓ Increment academic year: ${academicYear} → ${academicYear + 1}\n` +
+        `✓ Migrate students: Year 3→4, Year 2→3, Year 1→2\n` +
+        `✓ Archive ${year4Count} graduating (Year 4) students\n` +
+        `✓ Preserve each student's joining year\n\n` +
+        `Current Distribution:\n${summaryLines}\n\n` +
+        `⚠️ This action cannot be undone. Continue?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Promote',
+            style: 'destructive',
+            onPress: async () => {
+              setPromoting(true);
+              try {
+                const result = await promoteAcademicYear(auth.currentUser?.uid);
+
+                if (result.success) {
+                  setAcademicYear(result.newYear);
+                  Alert.alert(
+                    '✅ Promotion Complete',
+                    result.message +
+                    `\n\nNew Academic Year: ${result.newYear}\n` +
+                    `Students Migrated: ${result.migratedCount || 0}\n` +
+                    `Students Graduated: ${result.archivedCount || 0}\n\n` +
+                    `All students have been migrated to their next year.`
+                  );
+                } else {
+                  Alert.alert('Error', result.message);
+                }
+              } catch (error) {
+                Alert.alert('Error', `Promotion failed: ${error.message}`);
+              } finally {
+                setPromoting(false);
+              }
+            }
+          }
+        ]
+      );
+    } catch (error) {
+      Alert.alert('Error', `Failed to load student data: ${error.message}`);
     }
   };
 
@@ -271,6 +338,14 @@ const FacultyDashboard = () => {
           </>
         )}
       </ScrollView>
+
+      {/* Promotion Progress Indicator */}
+      {promoting && (
+        <View style={styles.promoLoadingOverlay}>
+          <ActivityIndicator size="large" color="#ffffff" />
+          <Text style={styles.promoLoadingText}>Promoting Academic Year... Please wait.</Text>
+        </View>
+      )}
 
       {/* Year Selector Modal */}
       {showYearSelector && (
@@ -554,6 +629,19 @@ const styles = StyleSheet.create({
   },
   cancelText: {
     color: '#e74c3c',
+  },
+  promoLoadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 9999,
+  },
+  promoLoadingText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 16,
   },
 });
 

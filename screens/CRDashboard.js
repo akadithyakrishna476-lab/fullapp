@@ -1,8 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { signOut } from 'firebase/auth';
-import React, { useEffect, useState } from 'react';
+import { collection, collectionGroup, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   ScrollView,
@@ -12,7 +13,8 @@ import {
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { auth } from '../firebase/firebaseConfig';
+import { auth, db } from '../firebase/firebaseConfig';
+import { getYearDisplayLabel, loadAcademicYear } from '../utils/academicYearManager';
 
 const CRDashboard = () => {
   const router = useRouter();
@@ -20,19 +22,139 @@ const CRDashboard = () => {
   const [userName, setUserName] = useState('Class Representative');
 
   useEffect(() => {
-    loadCRData();
+    const init = async () => {
+      await loadAcademicYear();
+      await loadCRData();
+    };
+    init();
   }, []);
+
+  // Refresh CR year whenever screen is focused (e.g., after promotion)
+  useFocusEffect(
+    useCallback(() => {
+      const refreshData = async () => {
+        const authUid = await AsyncStorage.getItem('authUid') || auth.currentUser?.uid;
+        if (authUid) {
+          await syncCRProfileWithFirestore(authUid);
+        }
+      };
+      refreshData();
+    }, [])
+  );
 
   const loadCRData = async () => {
     try {
       const storedCRData = await AsyncStorage.getItem('crData');
+      const authUid = await AsyncStorage.getItem('authUid') || auth.currentUser?.uid;
+
       if (storedCRData) {
         const data = JSON.parse(storedCRData);
         setCRData(data);
         setUserName(data.name || 'Class Representative');
       }
+
+      // 1. Sync from Profile (Cached Source)
+      if (authUid) {
+        await syncCRProfileWithFirestore(authUid);
+      }
+
+      // 2. ALWAYS verify assignment (Live Source of Truth)
+      // This overcomes issues where users doc might be stale after promotion
+      const currentData = crData || (storedCRData ? JSON.parse(storedCRData) : null);
+      if (currentData?.studentId && currentData?.departmentId) {
+        await fetchCurrentYearFromFirestore(currentData.studentId, currentData.departmentId);
+      }
     } catch (error) {
       console.error('Error loading CR data:', error);
+    }
+  };
+
+  /**
+   * Syncs the CR profile with the users collection and official student record.
+   * This ensures the dashboard always shows the live academic year.
+   */
+  const syncCRProfileWithFirestore = async (uid) => {
+    try {
+      const userDocRef = doc(db, 'users', uid);
+      const userSnap = await getDoc(userDocRef);
+
+      if (userSnap.exists()) {
+        const userData = userSnap.data();
+        const email = userData.email?.toLowerCase().trim();
+
+        let liveCurrentYear = parseInt(userData.currentYear || userData.year_level || 1, 10);
+
+        // EXTRA SECURITY: Cross-reference with the actual student record (Single Source of Truth)
+        if (email) {
+          try {
+            const studentsRef = collectionGroup(db, 'students');
+            const studentQuery = query(studentsRef, where('email', '==', email));
+            const studentSnap = await getDocs(studentQuery);
+
+            if (!studentSnap.empty) {
+              const studentData = studentSnap.docs[0].data();
+              const studentYear = parseInt(studentData.currentYear || studentData.year_level || 0, 10);
+              const pathYear = studentSnap.docs[0].ref.path.match(/year(\d)/)?.[1];
+
+              const confirmedYear = studentYear || (pathYear ? parseInt(pathYear, 10) : liveCurrentYear);
+
+              if (confirmedYear && confirmedYear !== liveCurrentYear) {
+                console.log(`📡 Academic Year Sync: Student record shows Year ${confirmedYear}, updating profile...`);
+                liveCurrentYear = confirmedYear;
+              }
+            }
+          } catch (e) {
+            console.warn('⚠️ Student record cross-reference failed', e.message);
+          }
+        }
+
+        const updatedData = {
+          name: userData.name,
+          email: email,
+          currentYear: liveCurrentYear,
+          departmentId: userData.departmentId || userData.departmentCode,
+          departmentName: userData.departmentName,
+          studentId: userData.studentId || userData.linkedStudentId,
+        };
+
+        setCRData(updatedData);
+        setUserName(userData.name || 'Class Representative');
+
+        // Update AsyncStorage to prevent stale data on next load
+        await AsyncStorage.setItem('crData', JSON.stringify(updatedData));
+      }
+    } catch (error) {
+      console.error('Error syncing profile:', error);
+    }
+  };
+
+  const fetchCurrentYearFromFirestore = async (studentId, departmentId) => {
+    if (!studentId || !departmentId) return;
+    try {
+      // Search for the CR's current record across all year collections
+      const years = ['year_1', 'year_2', 'year_3', 'year_4'];
+
+      for (const year of years) {
+        try {
+          const crRef = collection(db, 'classrepresentative', year, `department_${departmentId}`);
+          const q = query(crRef, where('studentId', '==', studentId));
+          const snapshot = await getDocs(q);
+
+          if (!snapshot.empty) {
+            const crDoc = snapshot.docs[0].data();
+            const yearNum = parseInt(year.replace('year_', ''), 10) || 1;
+
+            // Update local state with numeric source
+            setCRData(prev => ({ ...prev, currentYear: yearNum }));
+            console.log(`✅ Found assignment in ${year} - Syncing to Year ${yearNum}`);
+            break;
+          }
+        } catch (error) {
+          continue;
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching current year from Firestore:', error);
     }
   };
 
@@ -170,7 +292,7 @@ const CRDashboard = () => {
               <View style={styles.profileDetailRow}>
                 <Ionicons name="school-outline" size={16} color="#7f8c8d" />
                 <Text style={styles.profileDetailText}>
-                  Year: {crData.year?.replace('year_', '')}
+                  Year: {crData.currentYear ? getYearDisplayLabel(crData.currentYear) : 'N/A'}
                 </Text>
               </View>
               <View style={styles.profileDetailRow}>
