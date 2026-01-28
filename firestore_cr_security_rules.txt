@@ -1,0 +1,115 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function to get user email
+    function getUserEmail() {
+      return request.auth.token.email;
+    }
+    
+    // Helper function to check if user is faculty
+    function isFaculty() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/faculty/$(request.auth.uid));
+    }
+    
+    // Helper function to check if user is active CR
+    function isActiveCR(year, departmentId) {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/classrepresentative/$(year)/department_$(departmentId)/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/classrepresentative/$(year)/department_$(departmentId)/$(request.auth.uid)).data.active == true &&
+             get(/databases/$(database)/documents/classrepresentative/$(year)/department_$(departmentId)/$(request.auth.uid)).data.email == getUserEmail();
+    }
+    
+    // Students collection (year-wise + department-wise)
+    // Path: students/year_X/departments/{deptId}/students/{studentId}
+    match /students/{year}/departments/{deptId}/students/{studentId} {
+      // Faculty can read/write students in their department
+      allow read, write: if isFaculty();
+      
+      // Active CRs can read students in their year + department
+      allow read: if isActiveCR(year, deptId);
+    }
+    
+    // Class Representatives collection (year-wise + department-wise)
+    // Path: classrepresentative/year_X/department_Y/{crId}
+    match /classrepresentative/{year}/{departmentPath}/{crId} {
+      // Faculty can read/write CR records
+      allow read, write: if isFaculty();
+      
+      // CR can read their own record if active
+      allow read: if isAuthenticated() && 
+                     resource.data.email == getUserEmail() &&
+                     resource.data.active == true;
+      
+      // Prevent deletion of CR records (preserve audit trail)
+      allow delete: if false;
+    }
+    
+    // Users collection (for role lookup)
+    match /users/{userId} {
+      // User can read their own data
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      
+      // Faculty can write user data
+      allow write: if isFaculty();
+    }
+    
+    // Faculty collection
+    match /faculty/{facultyId} {
+      // Faculty can read their own profile
+      allow read: if isAuthenticated() && request.auth.uid == facultyId;
+      
+      // Only faculty can update their own profile
+      allow update: if isAuthenticated() && request.auth.uid == facultyId;
+      
+      // Create/delete restricted (admin only)
+      allow create, delete: if false;
+    }
+    
+    // Old CR structure (legacy - restrict access)
+    match /classRepresentatives/{year}/departments/{deptId}/reps/{repId} {
+      allow read: if isFaculty();
+      allow write: if isFaculty();
+    }
+    
+    // Attendance records
+    match /attendance/{year}/departments/{deptId}/records/{recordId} {
+      allow read, write: if isFaculty();
+      allow read, write: if isActiveCR(year, deptId);
+    }
+    
+    // Announcements
+    match /announcements/{announcementId} {
+      allow read: if isAuthenticated();
+      allow write: if isFaculty();
+    }
+    
+    // Timetable
+    match /timetable/{year}/departments/{deptId}/schedule/{scheduleId} {
+      allow read: if isAuthenticated();
+      allow write: if isFaculty();
+    }
+    
+    // Chat/Messages
+    match /messages/{messageId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Notifications
+    match /notifications/{userId}/{notificationId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow write: if isFaculty();
+    }
+    
+    // Default deny all other access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

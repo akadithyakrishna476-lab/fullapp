@@ -1,0 +1,90 @@
+{
+    "indexes": [
+        {
+            "collectionGroup": "slots",
+            "queryScope": "COLLECTION_GROUP",
+            "fields": [
+                {
+                    "fieldPath": "day",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "facultyId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "year",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "classRepresentatives",
+            "queryScope": "COLLECTION_GROUP",
+            "fields": [
+                {
+                    "fieldPath": "email",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "year",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collection": "classStatus",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "date",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "department",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "year",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collection": "classStatus",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "date",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "facultyId",
+                    "order": "ASCENDING"
+                }
+            ]
+        }
+    ],
+    "fieldOverrides": [
+        {
+            "collectionGroup": "slots",
+            "fieldPath": "facultyId",
+            "indexes": [
+                {
+                    "order": "ASCENDING",
+                    "queryScope": "COLLECTION_GROUP"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "slots",
+            "fieldPath": "collegeId",
+            "indexes": [
+                {
+                    "order": "ASCENDING",
+                    "queryScope": "COLLECTION_GROUP"
+                }
+            ]
+        }
+    ]
+}

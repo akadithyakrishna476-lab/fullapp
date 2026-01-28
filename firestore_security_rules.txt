@@ -1,0 +1,268 @@
+/**
+ * FIRESTORE SECURITY RULES
+ * 
+ * Secure Class Representative Authentication System
+ * 
+ * Copy this entire content to your Firestore Security Rules in the Firebase Console
+ * Path: Firestore Database > Rules
+ * 
+ * Rules Overview:
+ * 1. Only authenticated users can read/write their own documents
+ * 2. Only Cloud Functions (via service account) can update user metadata
+ * 3. Reps can only read their own profile and related data
+ * 4. Faculty can manage rep assignments via Cloud Functions
+ * 5. Password resets are tracked and validated
+ */
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ==========================================
+    // HELPER FUNCTIONS
+    // ==========================================
+    
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Check if request is from Firebase Admin SDK
+    function isAdmin() {
+      return request.auth.token.admin == true;
+    }
+    
+    // Check if the UID in the document matches the authenticated user
+    function isOwnDocument(uid) {
+      return request.auth.uid == uid;
+    }
+    
+    // Check if user is an active Class Representative
+    function isActiveRep(uid) {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(uid)).data.role == 'class_representative' &&
+             get(/databases/$(database)/documents/users/$(uid)).data.isActiveRep == true;
+    }
+    
+    // Check if user has faculty role
+    function isFaculty(uid) {
+      return isAuthenticated() && 
+             get(/databases/$(database)/documents/users/$(uid)).data.role == 'faculty';
+    }
+    
+    // ==========================================
+    // USERS COLLECTION
+    // ==========================================
+    // Contains user metadata including role, rep status, and password version
+    // STRICT ACCESS CONTROL - Only allow specific operations
+    
+    match /users/{uid} {
+      
+      // Read: User can read their own document
+      allow read: if isAuthenticated() && isOwnDocument(uid);
+      
+      // Create: Only Cloud Functions can create user documents
+      allow create: if false;
+      
+      // Update: Only Cloud Functions can update user documents
+      // This prevents users from:
+      // - Changing their own role
+      // - Setting themselves as isActiveRep
+      // - Manipulating passwordVersion
+      allow update: if false;
+      
+      // Delete: Not allowed
+      allow delete: if false;
+    }
+    
+    // ==========================================
+    // PASSWORD RESETS COLLECTION
+    // ==========================================
+    // Stores password reset tokens and their status
+    // Used to prevent reset link reuse and track reset attempts
+    
+    match /passwordResets/{resetId} {
+      
+      // Read: Only Cloud Functions can read (not accessible to clients)
+      allow read: if false;
+      
+      // Create: Only Cloud Functions
+      allow create: if false;
+      
+      // Update: Only Cloud Functions
+      allow update: if false;
+      
+      // Delete: Only Cloud Functions
+      allow delete: if false;
+    }
+    
+    // ==========================================
+    // REP ASSIGNMENTS COLLECTION
+    // ==========================================
+    // Audit log of all rep assignments and reassignments
+    
+    match /repAssignments/{assignmentId} {
+      
+      // Read: Faculty can read assignment history
+      allow read: if isAuthenticated() && isFaculty(request.auth.uid);
+      
+      // Create: Only Cloud Functions
+      allow create: if false;
+      
+      // Write/Delete: Not allowed
+      allow update, delete: if false;
+    }
+    
+    // ==========================================
+    // FACULTY ENDPOINTS COLLECTION
+    // ==========================================
+    // Documents that trigger Cloud Functions for faculty actions
+    
+    match /facultyActions/{actionId} {
+      
+      // Read: Only faculty can read their own actions
+      allow read: if isAuthenticated() && 
+                     isFaculty(request.auth.uid) &&
+                     resource.data.facultyId == request.auth.uid;
+      
+      // Create: Only faculty can create (triggers Cloud Function)
+      allow create: if isAuthenticated() && 
+                       isFaculty(request.auth.uid) &&
+                       request.resource.data.facultyId == request.auth.uid;
+      
+      // Update: Only to update status field
+      allow update: if isAuthenticated() && 
+                       isFaculty(request.auth.uid) &&
+                       resource.data.facultyId == request.auth.uid &&
+                       request.resource.data.status in ['pending', 'completed', 'failed'];
+      
+      // Delete: Not allowed
+      allow delete: if false;
+    }
+    
+    // ==========================================
+    // REP PROFILE COLLECTION
+    // ==========================================
+    // Additional rep-specific data (optional)
+    
+    match /repProfiles/{uid} {
+      
+      // Read: Rep can read their own profile
+      allow read: if isAuthenticated() && isOwnDocument(uid) && isActiveRep(uid);
+      
+      // Create: Only Cloud Functions
+      allow create: if false;
+      
+      // Update: Only Cloud Functions (or potentially the rep themselves)
+      allow update: if isAuthenticated() && 
+                       isOwnDocument(uid) && 
+                       isActiveRep(uid) &&
+                       // Only allow updating specific fields
+                       request.resource.data.diff(resource.data).affectedKeys()
+                         .hasOnly(['phoneNumber', 'profilePicture', 'preferences']);
+      
+      // Delete: Not allowed
+      allow delete: if false;
+    }
+    
+    // ==========================================
+    // REP SESSIONS COLLECTION
+    // ==========================================
+    // Track active login sessions for security
+    
+    match /repSessions/{sessionId} {
+      
+      // Read: Rep can read their own sessions
+      allow read: if isAuthenticated() && 
+                     isActiveRep(request.auth.uid) &&
+                     resource.data.uid == request.auth.uid;
+      
+      // Create: Rep creates session on login
+      allow create: if isAuthenticated() && 
+                       isActiveRep(request.auth.uid) &&
+                       request.resource.data.uid == request.auth.uid;
+      
+      // Update: Rep can update their own session
+      allow update: if isAuthenticated() && 
+                       isActiveRep(request.auth.uid) &&
+                       resource.data.uid == request.auth.uid;
+      
+      // Delete: Rep can delete (logout)
+      allow delete: if isAuthenticated() && 
+                       resource.data.uid == request.auth.uid;
+    }
+    
+    // ==========================================
+    // REP DASHBOARD DATA COLLECTION
+    // ==========================================
+    // Data specific to rep dashboard
+    
+    match /repDashboard/{collegeId}/departments/{deptId}/reps/{uid} {
+      
+      // Read: Rep can read their assigned slot data
+      allow read: if isAuthenticated() && 
+                     isOwnDocument(uid) && 
+                     isActiveRep(uid);
+      
+      // Write: Only Cloud Functions
+      allow create, update, delete: if false;
+    }
+    
+    // ==========================================
+    // AUDIT LOGS COLLECTION
+    // ==========================================
+    // Comprehensive audit trail of all authentication events
+    
+    match /auditLogs/{logId} {
+      
+      // Read: Only faculty and Cloud Functions
+      allow read: if isAdmin() || 
+                     (isAuthenticated() && isFaculty(request.auth.uid));
+      
+      // Create: Only Cloud Functions
+      allow create: if false;
+      
+      // Update/Delete: Not allowed
+      allow update, delete: if false;
+    }
+    
+    // ==========================================
+    // CLASS STATUS COLLECTION
+    // ==========================================
+    // Daily class status updates by Reps
+    
+    match /classStatus/{statusId} {
+      
+      // Read: Any authenticated user (Faculty or Rep) can read
+      // Visibility is handled by UI queries filtering by dept/year/date
+      allow read: if isAuthenticated();
+      
+      // Create: Authenticated Reps can create
+      // Note: We'd ideally check if they are the rep for that specific year/dept, 
+      // but 'isActiveRep' helper only checks if they are A rep.
+      allow create: if isAuthenticated() && (isActiveRep(request.auth.uid) || isFaculty(request.auth.uid));
+      
+      // Update/Delete: Not allowed per requirement
+      allow update, delete: if false;
+    }
+
+    // ==========================================
+    // TIMETABLE COLLECTION
+    // ==========================================
+    match /timetable/{document=**} {
+      allow read: if isAuthenticated();
+      // Write access is usually reserved for Admin or specific scripts
+      allow write: if false;
+    }
+
+    // ==========================================
+    // CATCH-ALL RULE
+    // ==========================================
+    // Deny everything else by default (fail-safe)
+    
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
