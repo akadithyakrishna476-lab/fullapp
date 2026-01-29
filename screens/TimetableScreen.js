@@ -159,7 +159,7 @@ const TimetableScreen = () => {
   const [userCollegeId, setUserCollegeId] = useState(null);
   const [showYearDropdown, setShowYearDropdown] = useState(false);
   const [showStatusModal, setShowStatusModal] = useState(false);
-  const [statusOptions] = useState(['Faculty Arrived', 'Faculty Not Arrived', 'Late']);
+  const [statusOptions] = useState(['Faculty Arrived', 'Faculty Not Arrived']);
   const [todayDateStr, setTodayDateStr] = useState('');
 
   useEffect(() => {
@@ -562,75 +562,105 @@ const TimetableScreen = () => {
     return slots.some(s => s.id === slotId);
   };
 
-  const handleSlotPress = (day, timeSlot) => {
-    const slotKey = `${day}-${timeSlot.id}`;
-    const entry = timetable[slotKey];
-    const isOwnEntry = entry?.facultyId === auth.currentUser.uid;
+  const handleEditSlot = (slot) => {
+    // Populate state for editing
+    const entry = timetable[slot.key];
+    if (!entry) return;
 
+    // Use current settings
+    setSelectedSlot(slot);
+    setEditSubject(entry.subjectName || '');
+    setEditClass(entry.year || 'Year 1');
+    setEditDepartment(entry.department || userDepartment);
+
+    // Set Status (for toggle UI in Edit Modal)
+    // We can rely on handleSaveSlot to read the status from a local state if we add one,
+    // OR we can rely on the user toggling it. 
+    // BUT the requirement is "Inside the Edit modal, include Faculty Arrival / Class Status options"
+    // So we need state variables for that.
+    // Let's assume we use the existing `selectedSlot` context or a new state.
+    // Simplest: Add local state `editArrivalStatus`.
+
+    // Wait, handleSaveSlot uses `selectedSlot`. 
+    // We should probably just let handleSaveSlot read `editSubject`, `editClass`, `editDepartment`.
+    // And for Status, we need new state.
+
+    // Let's initialize status state from entry
+    setEditStatus((entry.facultyArrivalStatus === 'ARRIVED' || entry.facultyArrivalStatus === 'NOT_ARRIVED') ? entry.facultyArrivalStatus : null);
+
+    setStartTime(slot.timeSlot.startTime);
+    setEndTime(slot.timeSlot.endTime);
+    setShowEditModal(true);
+  };
+
+  const [editStatus, setEditStatus] = useState(null); // New State for Status Toggle in Edit Modal
+
+  const handleSlotPress = (day, timeSlot) => {
+    const slotId = timeSlot.id;
+    const key = `${day}-${slotId}`;
+    const entry = timetable[key];
+
+    // REP LOGIC: If Rep clicks empty slot -> Add. If Rep clicks THEIR slot -> Edit.
     if (userRole === 'cr') {
-      // Rep can edit empty slots OR slots created by ANY Representative
-      // NEW: Rep can MARK STATUS for faculty entries
-      if (entry && entry.subjectName && entry.createdByRole === 'faculty') {
-        setSelectedSlot({ day, timeSlot, key: slotKey, entry });
+      if (entry && entry.createdByRole === 'rep') {
+        // Edit Mode
+        handleEditSlot({ day, timeSlot, key });
+        return;
+      }
+      if (entry && entry.createdByRole === 'faculty') {
+        // View Details / Mark Status (Existing Modal)
+        setSelectedSlot({ day, timeSlot, entry, key });
         setShowStatusModal(true);
         return;
       }
-    }
-
-    if (userRole === 'faculty') {
-      // Faculty can modify ANY slot, including other faculty or rep entries.
-      // We removed the previous blocking for other faculty's entries to satisfy "modify data in any slot".
-    }
-
-    setSelectedSlot({ day, timeSlot, key: slotKey });
-
-    // Populate Modal
-
-
-    // Populate Modal
-    if (userRole === 'faculty') {
-      const isPlaceholder = entry?.createdByRole === 'rep';
-      const isFacultyEntry = entry?.createdByRole === 'faculty';
-      const isEditMode = (isOwnEntry || isPlaceholder || isFacultyEntry) && entry;
-
-      let nextSubject = '';
-      let nextClass = null;
-      let nextDept = null;
-
-      if (isEditMode) {
-        // Editing existing entry
-        nextSubject = entry.subjectName || '';
-        // Normalize year to ensure it matches 'Year 1'...'Year 4' options
-        // Strict normalization: force null if unknown
-        nextClass = normalizeYearName(entry.year) || 'Year 1';
-
-        nextDept = entry.department || null;
-      } else {
-        // New Entry initialization
-        nextSubject = '';
-        nextClass = 'Year 1'; // Default to Year 1
-
-        // Auto-select department ONLY if it exists in the admin-enabled list
-        const myDeptExists = availableDepartments.find(d => d.code === userDepartment);
-        nextDept = myDeptExists ? userDepartment : null;
-      }
-
-      setEditSubject(nextSubject);
-      setEditClass(nextClass);
-
-      // Strict: Only set dept if we found a match, otherwise null.
-      setEditDepartment(nextDept);
-
-      console.log(`[Timetable] MODAL START -> Dept: "${nextDept}", Year: "${nextClass}", Type: ${typeof nextClass}`);
-    } else {
-      // Rep adding or editing a Representative entry
-      setEditSubject(entry?.subjectName || '');
-      // STRICT: For a Rep, editClass MUST be their assigned year
-      const repYear = userClass || 'Year 1';
-      setEditClass(repYear);
+      // Empty Slot -> Add Mode
+      const year = userClass || 'Year 1';
+      setEditSubject('');
+      setEditClass(year);
       setEditDepartment(userDepartment || 'GEN');
-      console.log(`[Timetable] REP MODAL START -> Dept: "${userDepartment}", Year: "${repYear}", Editing: ${!!entry?.subjectName}`);
+      setEditStatus(null); // Reset status
+
+      setSelectedSlot({ day, timeSlot, key });
+      setStartTime(timeSlot.startTime);
+      setEndTime(timeSlot.endTime);
+      setShowEditModal(true);
+      return;
     }
+
+    // FACULTY LOGIC (Existing)
+    const year = 'Year 1'; // Default
+    let isEditMode = false;
+
+    if (entry) {
+      if (entry.facultyId === auth.currentUser.uid) {
+        // Edit own slot
+        isEditMode = true;
+      } else {
+        // View/Override others
+        // isEditMode = true; // Faculty overrides allowed
+      }
+    }
+
+    setSelectedSlot({ day, timeSlot, entry, key });
+
+    let nextSubject = '';
+    let nextClass = 'Year 1';
+    let nextDept = null;
+
+    if (entry) {
+      nextSubject = entry.subjectName || '';
+      nextClass = normalizeYearName(entry.year) || 'Year 1';
+      nextDept = entry.department || null;
+    } else {
+      nextClass = 'Year 1';
+      const myDeptExists = availableDepartments.find(d => d.code === userDepartment);
+      nextDept = myDeptExists ? userDepartment : null;
+    }
+
+    setEditSubject(nextSubject);
+    setEditClass(nextClass);
+    setEditDepartment(nextDept);
+    setEditStatus(entry?.facultyArrivalStatus || null); // Load status if any
 
     setStartTime(timeSlot.startTime);
     setEndTime(timeSlot.endTime);
@@ -698,52 +728,77 @@ const TimetableScreen = () => {
       // --- PREPARE DATA ---
       let secondaryEntries = existingData?.secondaryEntries || [];
 
-      // If replacing another faculty's entry, move current primary to secondary
-      if (forceOverwrite && existingData && existingData.facultyId !== auth.currentUser.uid) {
-        secondaryEntries.push({
-          subjectName: existingData.subjectName,
-          facultyId: existingData.facultyId,
-          facultyName: existingData.facultyName,
-          timeSlot: existingData.timeSlot,
-          isPrimary: false,
-          replacedAt: new Date().toISOString()
-        });
+      // If user is Faculty and editing a slot that has a PRIMARY Rep entry, 
+      // do we overwrite? Or become primary? 
+      // Current logic: Faculty becomes Primary.
+
+      // Calculate Arrival Status / Class Status from Toggle State
+      let arrivalStatus = null;
+      let computedClassStatus = null;
+      let statusDate = null;
+      let statusMarkedAt = null;
+      let statusMarkedBy = null;
+
+      if (editStatus) { // If a status is selected in the Edit Modal
+        statusDate = todayDateStr;
+        statusMarkedAt = new Date().toISOString();
+        statusMarkedBy = auth.currentUser.uid;
+
+        if (editStatus === 'ARRIVED') {
+          arrivalStatus = 'ARRIVED';
+          computedClassStatus = 'BUSY';
+        } else if (editStatus === 'NOT_ARRIVED') {
+          arrivalStatus = 'NOT_ARRIVED';
+          computedClassStatus = 'FREE';
+        }
       }
 
       const slotData = {
+        id: slotId,
         subjectName: editSubject.trim(),
-        facultyId: userRole === 'faculty' ? auth.currentUser.uid : null,
-        facultyName: userRole === 'faculty' ? facultyName : 'Representative (Private)',
+        department: targetDept,
+        year: year,
+        facultyId: userRole === 'faculty' ? auth.currentUser.uid : (existingData?.facultyId || 'REP_ENTRY'),
+        facultyName: userRole === 'faculty' ? (facultyName || 'Faculty') : (existingData?.facultyName || 'Representative'),
+        createdByRole: userRole === 'cr' ? 'rep' : 'faculty',
+        updatedAt: new Date().toISOString(),
+
+        // STATUS FIELDS (Controlled by Rep Toggle in Edit Modal)
+        ...(editStatus !== undefined ? {
+          facultyArrivalStatus: arrivalStatus,
+          classStatus: computedClassStatus,
+          statusDate: statusDate,
+          statusMarkedBy: statusMarkedBy,
+          statusMarkedAt: statusMarkedAt
+        } : {
+          // Keep existing status if not explicitly changing it
+          facultyArrivalStatus: existingData?.facultyArrivalStatus || null,
+          classStatus: existingData?.classStatus || null,
+          statusDate: existingData?.statusDate || null,
+          statusMarkedBy: existingData?.statusMarkedBy || null,
+          statusMarkedAt: existingData?.statusMarkedAt || null
+        }),
+
+        // --- CORE GRID FIELDS ---
         timeSlot: selectedSlot.timeSlot.label,
         isPrimary: true,
-        year: year,
         day: day,
         slotId: slotId,
         startTime: selectedSlot.timeSlot.startTime,
         endTime: selectedSlot.timeSlot.endTime,
         createdAt: existingData?.createdAt || new Date().toISOString(),
         lastUpdatedAt: new Date().toISOString(),
-        secondaryEntries: secondaryEntries,
-        createdByRole: userRole === 'cr' ? 'rep' : 'faculty',
-        department: targetDept,
         collegeId: userCollegeId,
-
-        // --- PRESERVE STATUS FIELDS ---
-        // If a Rep has already marked this slot, we must NOT wipe it out when Faculty edits the name.
-        facultyArrivalStatus: existingData?.facultyArrivalStatus || null,
-        classStatus: existingData?.classStatus || null,
-        statusMarkedBy: existingData?.statusMarkedBy || null,
-        statusMarkedAt: existingData?.statusMarkedAt || null,
-        statusDate: existingData?.statusDate || null
       };
 
+      // CRITICAL: Save to GLOBAL path for EVERYONE to see
+      // Path: timetable/{dept}/{year}/{day}/slots/{slotId}
+      await setDoc(docRef, slotData);
+
       if (userRole === 'cr') {
-        // Save to PERSONAL path for Representative
+        // Also keep a copy in personal storage for the Rep's private view logic if needed
         const personalDocRef = doc(db, 'users', auth.currentUser.uid, 'repPlaceholders', `${day}-${slotId}`);
         await setDoc(personalDocRef, slotData);
-      } else {
-        // Save to GLOBAL path for Faculty
-        await setDoc(docRef, slotData);
       }
 
       setShowEditModal(false);
@@ -823,8 +878,43 @@ const TimetableScreen = () => {
 
       const docRef = doc(db, 'timetable', targetDept, year, day, 'slots', slotId);
 
+      // Map UI Options -> DB Value
+      const clickedArrivalValue = status === 'Faculty Arrived' ? 'ARRIVED' : 'NOT_ARRIVED';
+      const currentArrivalValue = entry?.facultyArrivalStatus;
+
+      // TOGGLE LOGIC: If clicking the same status, set everything to null
+      if (currentArrivalValue === clickedArrivalValue) {
+        await setDoc(docRef, {
+          facultyArrivalStatus: null,
+          classStatus: null,
+          statusDate: null,
+          statusMarkedAt: null,
+          statusMarkedBy: null,
+          date: null
+        }, { merge: true });
+
+        setShowStatusModal(false);
+        setLoading(false);
+        Alert.alert('Success', 'Status cleared.');
+        return;
+      }
+
+      // Normal Selection Logic
+      let arrivalStatus = 'ARRIVED';
+      let computedClassStatus = 'BUSY';
+
+      if (status === 'Faculty Arrived') {
+        arrivalStatus = 'ARRIVED';
+        computedClassStatus = 'BUSY';
+      } else if (status === 'Faculty Not Arrived') {
+        arrivalStatus = 'NOT_ARRIVED';
+        computedClassStatus = 'FREE';
+      }
+
       await setDoc(docRef, {
-        classStatus: status,
+        facultyArrivalStatus: arrivalStatus,
+        classStatus: computedClassStatus,
+        statusDate: todayDateStr,
         date: todayDateStr,
         facultyId: entry.facultyId || null,
         department: targetDept,
@@ -836,7 +926,7 @@ const TimetableScreen = () => {
 
       setShowStatusModal(false);
       setLoading(false);
-      Alert.alert('Success', `Class status updated to: ${status}`);
+      Alert.alert('Success', `Class status set to: ${status}`);
     } catch (error) {
       console.error('? Error saving status:', error);
       Alert.alert('Error', 'Failed to update class status.');
@@ -896,6 +986,22 @@ const TimetableScreen = () => {
                           {classData.subjectName}
                         </Text>
                       )}
+                      {classData?.classStatus && (
+                        <View style={[
+                          styles.statusBadge,
+                          {
+                            backgroundColor: (classData.classStatus === 'BUSY' || classData.classStatus === 'Faculty Arrived') ? '#10B981' :
+                              (classData.classStatus === 'FREE' || classData.classStatus === 'Faculty Not Arrived') ? '#EF4444' :
+                                (classData.classStatus === 'LATE' || classData.classStatus === 'Late') ? '#F1C40F' : '#8B5CF6'
+                          }
+                        ]}>
+                          <Text style={styles.statusBadgeText}>
+                            {classData.classStatus === 'BUSY' ? 'ARRIVED' :
+                              classData.classStatus === 'FREE' ? 'NOT ARRIVED' :
+                                classData.classStatus}
+                          </Text>
+                        </View>
+                      )}
                     </>
                   ) : (
                     <>
@@ -912,9 +1018,17 @@ const TimetableScreen = () => {
                       {classData?.classStatus && (
                         <View style={[
                           styles.statusBadge,
-                          { backgroundColor: classData.classStatus === 'Faculty Arrived' ? '#10B981' : classData.classStatus === 'Faculty Not Arrived' ? '#EF4444' : '#8B5CF6' }
+                          {
+                            backgroundColor: (classData.classStatus === 'BUSY' || classData.classStatus === 'Faculty Arrived') ? '#10B981' :
+                              (classData.classStatus === 'FREE' || classData.classStatus === 'Faculty Not Arrived') ? '#EF4444' :
+                                (classData.classStatus === 'LATE' || classData.classStatus === 'Late') ? '#F1C40F' : '#8B5CF6'
+                          }
                         ]}>
-                          <Text style={styles.statusBadgeText}>{classData.classStatus}</Text>
+                          <Text style={styles.statusBadgeText}>
+                            {classData.classStatus === 'BUSY' ? 'ARRIVED' :
+                              classData.classStatus === 'FREE' ? 'NOT ARRIVED' :
+                                classData.classStatus}
+                          </Text>
                         </View>
                       )}
                     </>
@@ -1072,24 +1186,30 @@ const TimetableScreen = () => {
 
             <Text style={styles.inputLabel}>Select Arrival Status</Text>
             <View style={styles.statusOptionsContainer}>
-              {statusOptions.map((status) => (
-                <TouchableOpacity
-                  key={status}
-                  style={[
-                    styles.statusOptionButton,
-                    selectedSlot?.entry?.classStatus === status && styles.statusOptionButtonSelected
-                  ]}
-                  onPress={() => handleSaveStatus(status)}
-                >
-                  <Text style={[
-                    styles.statusOptionText,
-                    selectedSlot?.entry?.classStatus === status && styles.statusOptionTextSelected
-                  ]}>{status}</Text>
-                  {selectedSlot?.entry?.classStatus === status && (
-                    <Ionicons name="checkmark-circle" size={20} color="#2563EB" />
-                  )}
-                </TouchableOpacity>
-              ))}
+              {statusOptions.map((status) => {
+                const isActive = (status === 'Faculty Arrived' && selectedSlot?.entry?.classStatus === 'BUSY') ||
+                  (status === 'Faculty Not Arrived' && selectedSlot?.entry?.classStatus === 'FREE') ||
+                  (status === 'Late' && selectedSlot?.entry?.classStatus === 'LATE') ||
+                  (selectedSlot?.entry?.classStatus === status);
+                return (
+                  <TouchableOpacity
+                    key={status}
+                    style={[
+                      styles.statusOptionButton,
+                      isActive && styles.statusOptionButtonSelected
+                    ]}
+                    onPress={() => handleSaveStatus(status)}
+                  >
+                    <Text style={[
+                      styles.statusOptionText,
+                      isActive && styles.statusOptionTextSelected
+                    ]}>{status}</Text>
+                    {isActive && (
+                      <Ionicons name="checkmark-circle" size={20} color="#2563EB" />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
         </View>
@@ -1107,138 +1227,181 @@ const TimetableScreen = () => {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.inputLabel}>Subject Name *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g., Artificial Intelligence"
-              value={editSubject || ''}
-              onChangeText={setEditSubject}
-              placeholderTextColor="#94A3B8"
-            />
+            {/* Scrollable Content */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{ paddingBottom: 20 }}
+            >
+              <Text style={styles.inputLabel}>Subject Name *</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., Artificial Intelligence"
+                value={editSubject || ''}
+                onChangeText={setEditSubject}
+                placeholderTextColor="#94A3B8"
+              />
 
-            {/* Picker Section */}
+              {/* Picker Section */}
 
-            <Text style={styles.inputLabel}>Department *</Text>
-            <View style={[styles.pickerContainer, userRole === 'cr' && styles.disabledInput]}>
-              {userRole === 'faculty' && availableDepartments.length === 0 ? (
-                <View style={{ padding: 16 }}>
-                  <Text style={{ color: '#94A3B8' }}>Loading departments...</Text>
-                </View>
-              ) : (
-                <Picker
-                  selectedValue={editDepartment !== null && availableDepartments.some(d => d.code === editDepartment) ? editDepartment : ""}
-                  onValueChange={(itemValue) => {
-                    const val = itemValue === "" ? null : itemValue;
-                    setEditDepartment(val);
-                  }}
-                  style={styles.picker}
-                  enabled={userRole === 'faculty'}
-                >
-                  <Picker.Item label={editDepartment ? "Select Department" : "Select Department"} value="" />
-                  {availableDepartments.map((dept) => (
-                    <Picker.Item key={dept.id} label={safe(dept.name, 'Unknown Dept')} value={dept.code} />
-                  ))}
-                  {/* Fallback to prevent native picker showing 'undefined' if value is set but not in list */}
-                  {editDepartment && !availableDepartments.some(d => d.code === editDepartment) && (
-                    <Picker.Item label={safe(editDepartment, 'Unknown')} value={editDepartment} />
-                  )}
-                </Picker>
-              )}
-            </View>
-
-
-            <Text style={styles.inputLabel}>Target Class *</Text>
-            {userRole === 'faculty' ? (
-              <View style={styles.customDropdownContainer}>
-                <TouchableOpacity
-                  style={styles.customPickerButton}
-                  onPress={() => setShowYearDropdown(!showYearDropdown)}
-                  disabled={userRole !== 'faculty'}
-                >
-                  <Text style={styles.customPickerText}>
-                    {editClass || 'Year 1'}
-                  </Text>
-                  <Ionicons name="chevron-down" size={20} color="#64748B" />
-                </TouchableOpacity>
-
-                {showYearDropdown && (
-                  <View style={styles.dropdownList}>
-                    {YEAR_OPTIONS.map((year) => (
-                      <TouchableOpacity
-                        key={year}
-                        style={[
-                          styles.dropdownItem,
-                          editClass === year && styles.dropdownItemSelected
-                        ]}
-                        onPress={() => {
-                          setEditClass(year);
-                          setShowYearDropdown(false);
-                        }}
-                      >
-                        <Text style={[
-                          styles.dropdownItemText,
-                          editClass === year && styles.dropdownItemTextSelected
-                        ]}>
-                          {year}
-                        </Text>
-                        {editClass === year && (
-                          <Ionicons name="checkmark" size={20} color="#2563EB" />
-                        )}
-                      </TouchableOpacity>
-                    ))}
+              <Text style={styles.inputLabel}>Department *</Text>
+              <View style={[styles.pickerContainer, userRole === 'cr' && styles.disabledInput]}>
+                {userRole === 'faculty' && availableDepartments.length === 0 ? (
+                  <View style={{ padding: 16 }}>
+                    <Text style={{ color: '#94A3B8' }}>Loading departments...</Text>
                   </View>
+                ) : (
+                  <Picker
+                    selectedValue={editDepartment !== null && availableDepartments.some(d => d.code === editDepartment) ? editDepartment : ""}
+                    onValueChange={(itemValue) => {
+                      const val = itemValue === "" ? null : itemValue;
+                      setEditDepartment(val);
+                    }}
+                    style={styles.picker}
+                    enabled={userRole === 'faculty'}
+                  >
+                    <Picker.Item label={editDepartment ? "Select Department" : "Select Department"} value="" />
+                    {availableDepartments.map((dept) => (
+                      <Picker.Item key={dept.id} label={safe(dept.name, 'Unknown Dept')} value={dept.code} />
+                    ))}
+                    {/* Fallback to prevent native picker showing 'undefined' if value is set but not in list */}
+                    {editDepartment && !availableDepartments.some(d => d.code === editDepartment) && (
+                      <Picker.Item label={safe(editDepartment, 'Unknown')} value={editDepartment} />
+                    )}
+                  </Picker>
                 )}
               </View>
-            ) : (
-              <View style={[styles.pickerContainer, styles.disabledInput]}>
-                <View style={styles.customPickerButton}>
-                  <Text style={styles.customPickerText}>
-                    {editClass || userClass || 'N/A'}
-                  </Text>
+
+
+              <Text style={styles.inputLabel}>Target Class *</Text>
+              {userRole === 'faculty' ? (
+                <View style={styles.customDropdownContainer}>
+                  <TouchableOpacity
+                    style={styles.customPickerButton}
+                    onPress={() => setShowYearDropdown(!showYearDropdown)}
+                    disabled={userRole !== 'faculty'}
+                  >
+                    <Text style={styles.customPickerText}>
+                      {editClass || 'Year 1'}
+                    </Text>
+                    <Ionicons name="chevron-down" size={20} color="#64748B" />
+                  </TouchableOpacity>
+
+                  {showYearDropdown && (
+                    <View style={styles.dropdownList}>
+                      {YEAR_OPTIONS.map((year) => (
+                        <TouchableOpacity
+                          key={year}
+                          style={[
+                            styles.dropdownItem,
+                            editClass === year && styles.dropdownItemSelected
+                          ]}
+                          onPress={() => {
+                            setEditClass(year);
+                            setShowYearDropdown(false);
+                          }}
+                        >
+                          <Text style={[
+                            styles.dropdownItemText,
+                            editClass === year && styles.dropdownItemTextSelected
+                          ]}>
+                            {year}
+                          </Text>
+                          {editClass === year && (
+                            <Ionicons name="checkmark" size={20} color="#2563EB" />
+                          )}
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              ) : (
+                <View style={[styles.pickerContainer, styles.disabledInput]}>
+                  <View style={styles.customPickerButton}>
+                    <Text style={styles.customPickerText}>
+                      {editClass || userClass || 'N/A'}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <View style={styles.timeRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Start Time *</Text>
+                  <TextInput
+                    style={[styles.input, styles.disabledInput]}
+                    placeholder="09:00"
+                    value={startTime}
+                    editable={false}
+                    placeholderTextColor="#94A3B8"
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>End Time *</Text>
+                  <TextInput
+                    style={[styles.input, styles.disabledInput]}
+                    placeholder="10:00"
+                    value={endTime}
+                    editable={false}
+                    placeholderTextColor="#94A3B8"
+                  />
                 </View>
               </View>
-            )}
 
-            <View style={styles.timeRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Start Time *</Text>
-                <TextInput
-                  style={[styles.input, styles.disabledInput]}
-                  placeholder="09:00"
-                  value={startTime}
-                  editable={false}
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>End Time *</Text>
-                <TextInput
-                  style={[styles.input, styles.disabledInput]}
-                  placeholder="10:00"
-                  value={endTime}
-                  editable={false}
-                  placeholderTextColor="#94A3B8"
-                />
-              </View>
-            </View>
+              {/* Status Toggles for Rep (or Faculty if desired) */}
+              {userRole === 'cr' && (
+                <View style={{ marginBottom: 20 }}>
+                  <Text style={styles.inputLabel}>Faculty Status (Optional)</Text>
+                  <View style={styles.statusOptionsContainer}>
+                    <TouchableOpacity
+                      style={[
+                        styles.statusOptionButton,
+                        (editStatus === 'ARRIVED' || editStatus === 'BUSY') && styles.statusOptionButtonSelected
+                      ]}
+                      onPress={() => setEditStatus(prev => (prev === 'ARRIVED' || prev === 'BUSY') ? null : 'ARRIVED')}
+                    >
+                      <Text style={[
+                        styles.statusOptionText,
+                        (editStatus === 'ARRIVED' || editStatus === 'BUSY') && styles.statusOptionTextSelected
+                      ]}>Faculty Arrived</Text>
+                      {(editStatus === 'ARRIVED' || editStatus === 'BUSY') && <Ionicons name="checkmark-circle" size={20} color="#2563EB" />}
+                    </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.submitButton,
-                (!editSubject?.trim() || !editClass || !editDepartment) && { backgroundColor: '#94A3B8' }
-              ]}
-              onPress={() => handleSaveSlot()}
-              disabled={!editSubject?.trim() || !editClass || !editDepartment}
-            >
-              <Text style={styles.submitButtonText}>Confirm & Save</Text>
-            </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.statusOptionButton,
+                        (editStatus === 'NOT_ARRIVED' || editStatus === 'FREE') && styles.statusOptionButtonSelected
+                      ]}
+                      onPress={() => setEditStatus(prev => (prev === 'NOT_ARRIVED' || prev === 'FREE') ? null : 'NOT_ARRIVED')}
+                    >
+                      <Text style={[
+                        styles.statusOptionText,
+                        (editStatus === 'NOT_ARRIVED' || editStatus === 'FREE') && styles.statusOptionTextSelected
+                      ]}>Faculty Not Arrived</Text>
+                      {(editStatus === 'NOT_ARRIVED' || editStatus === 'FREE') && <Ionicons name="checkmark-circle" size={20} color="#2563EB" />}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
 
-            {timetable[selectedSlot?.key] && userRole === 'faculty' && (
-              <TouchableOpacity style={styles.deleteButtonModal} onPress={handleDeleteSlot}>
-                <Ionicons name="trash-outline" size={22} color="#EF4444" />
-                <Text style={styles.deleteButtonText}>Remove Entry</Text>
+              <TouchableOpacity
+                style={[
+                  styles.submitButton,
+                  (!editSubject?.trim() || !editClass || !editDepartment) && { backgroundColor: '#94A3B8' }
+                ]}
+                onPress={() => handleSaveSlot()}
+                disabled={!editSubject?.trim() || !editClass || !editDepartment}
+              >
+                <Text style={styles.submitButtonText}>Confirm & Save</Text>
               </TouchableOpacity>
-            )}
+
+              {timetable[selectedSlot?.key] && (userRole === 'faculty' || (userRole === 'cr' && timetable[selectedSlot?.key]?.createdByRole === 'rep')) && (
+                <TouchableOpacity style={styles.deleteButtonModal} onPress={handleDeleteSlot}>
+                  <Ionicons name="trash-outline" size={22} color="#EF4444" />
+                  <Text style={styles.deleteButtonText}>Remove Entry</Text>
+                </TouchableOpacity>
+              )}
+            </ScrollView>
           </View>
         </View>
       </Modal>

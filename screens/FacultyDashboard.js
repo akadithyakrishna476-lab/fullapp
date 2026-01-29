@@ -48,6 +48,14 @@ const menuItems = [
     description: 'View daily class arrival status',
     screen: 'ClassStatus',
   },
+  {
+    id: '6',
+    title: 'Staff Advisor',
+    icon: 'shield',
+    color: '#9b59b6', // plum
+    description: 'Portal for Staff Advisors',
+    screen: 'StaffAdvisor',
+  },
 ];
 
 const FacultyDashboard = () => {
@@ -250,27 +258,7 @@ const FacultyDashboard = () => {
           ))}
         </View>
 
-        {isStaffAdvisor && (
-          <>
-            <Text style={[styles.sectionTitle, styles.topMargin]}>Staff Advisor Tools</Text>
-            <TouchableOpacity
-              style={[styles.largeCard, styles.staffAdvisorCard]}
-              activeOpacity={0.8}
-              onPress={() => handleModulePress('StaffAdvisor')}
-            >
-              <View style={styles.largeCardContent}>
-                <Ionicons name="shield" size={40} color="#9b59b6" />
-                <View style={styles.largeCardText}>
-                  <Text style={styles.largeCardTitle}>Staff Advisor Portal</Text>
-                  <Text style={styles.largeCardDescription}>
-                    Manage class, tasks, attendance & announcements
-                  </Text>
-                </View>
-              </View>
-              <Ionicons name="chevron-forward" size={24} color="#9b59b6" />
-            </TouchableOpacity>
-          </>
-        )}
+
       </ScrollView>
 
       {/* Year Selector Modal */}

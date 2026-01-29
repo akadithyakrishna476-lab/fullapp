@@ -63,6 +63,52 @@
                     "order": "ASCENDING"
                 }
             ]
+        },
+        {
+            "collection": "staffAdvisorChats",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "advisorJoiningYear",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "facultyId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "timestamp",
+                    "order": "ASCENDING"
+                }
+            ]
+        },
+        {
+            "collection": "staffAdvisorTodos",
+            "queryScope": "COLLECTION",
+            "fields": [
+                {
+                    "fieldPath": "advisorJoiningYear",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "facultyId",
+                    "order": "ASCENDING"
+                },
+                {
+                    "fieldPath": "createdAt",
+                    "order": "DESCENDING"
+                }
+            ]
+        },
+        {
+            "collectionGroup": "students",
+            "queryScope": "COLLECTION_GROUP",
+            "fields": [
+                {
+                    "fieldPath": "isRepresentative",
+                    "order": "ASCENDING"
+                }
+            ]
         }
     ],
     "fieldOverrides": [

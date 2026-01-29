@@ -1,7 +1,24 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from 'expo-router';
-import React, { useState } from 'react';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import {
+  addDoc,
+  collection,
+  collectionGroup,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where
+} from 'firebase/firestore';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
   Alert,
   FlatList,
   Modal,
@@ -10,172 +27,619 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { auth, db } from '../firebase/firebaseConfig';
 
 const StaffAdvisorScreen = () => {
   const navigation = useNavigation();
+  const router = useRouter();
+  const { role: paramRole } = useLocalSearchParams();
+
+  // State
+  const [loading, setLoading] = useState(true);
+  const [userRole, setUserRole] = useState(paramRole || 'faculty');
+  const [userData, setUserData] = useState(null);
+  const [facultyId, setFacultyId] = useState(null);
+  const [isStaffAdvisor, setIsStaffAdvisor] = useState(false);
+  const [advisorJoiningYear, setAdvisorJoiningYear] = useState(null);
   const [activeTab, setActiveTab] = useState('overview');
-  const [classInfo, setClassInfo] = useState({
-    name: 'Class A (Year 1 (2025))',
-    strength: 45,
-    representative: 'Rahul Kumar',
-    repContact: 'rahul@example.com',
-  });
 
-  const [tasks, setTasks] = useState([
-    { id: '1', title: 'Submit Syllabus', assignedTo: 'Class Rep', dueDate: '2025-02-10', status: 'pending' },
-    { id: '2', title: 'Schedule Class Meeting', assignedTo: 'Class Rep', dueDate: '2025-02-05', status: 'completed' },
-  ]);
+  // Enrollment State
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [showNoAdvisorMsg, setShowNoAdvisorMsg] = useState(false);
+  const [showYearInput, setShowYearInput] = useState(false);
+  const [joiningYear, setJoiningYear] = useState('');
 
-  const [announcements, setAnnouncements] = useState([
-    { id: '1', title: 'Mid-Semester Exam Schedule', date: '2025-02-15', message: 'Exams scheduled for Feb 25-28' },
-    { id: '2', title: 'New Academic Calendar', date: '2025-02-01', message: 'Updated calendar released' },
-  ]);
+  // Linked Rep Data
+  // Linked Reps Data (Auto-Connection)
+  const [connectedReps, setConnectedReps] = useState([]);
+  const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting' | 'connected' | 'awaiting'
+  const [showConnectModal, setShowConnectModal] = useState(false); // Kept for legacy prop compatibility if needed, but unused in logic
 
-  const [attendanceStats, setAttendanceStats] = useState({
-    totalClasses: 15,
-    averageAttendance: 88,
-    lowAttendanceStudents: 5,
-  });
-
-  const [syllabusProgress, setSyllabusProgress] = useState([
-    { id: '1', unit: 'Unit 1: Introduction', coverage: 100, status: 'Completed' },
-    { id: '2', unit: 'Unit 2: Core Concepts', coverage: 75, status: 'In Progress' },
-    { id: '3', unit: 'Unit 3: Advanced Topics', coverage: 0, status: 'Not Started' },
-  ]);
-
-  const [studentProgress, setStudentProgress] = useState([
-    { id: '1', name: 'Alice Johnson', grades: 'A', status: 'Excellent' },
-    { id: '2', name: 'Bob Smith', grades: 'B', status: 'Good' },
-    { id: '3', name: 'Charlie Brown', grades: 'C', status: 'Average' },
-  ]);
-
+  // Tasks State
+  const [tasks, setTasks] = useState([]);
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState('');
-  const [newTaskDueDate, setNewTaskDueDate] = useState('');
+  const [newTaskDescription, setNewTaskDescription] = useState('');
 
-  const handleAddTask = () => {
-    if (!newTaskTitle.trim() || !newTaskDueDate.trim()) {
-      Alert.alert('Error', 'Please fill all fields');
+  // Edit Task State
+  const [editingTask, setEditingTask] = useState(null);
+  const [showEditTaskModal, setShowEditTaskModal] = useState(false);
+  const [editTaskTitle, setEditTaskTitle] = useState('');
+  const [editTaskDescription, setEditTaskDescription] = useState('');
+
+  // Chat State
+  const [messages, setMessages] = useState([]);
+  const [inputMessage, setInputMessage] = useState('');
+  const flatListRef = useRef(null);
+
+
+
+  useEffect(() => {
+    loadUserStatus();
+  }, []);
+
+  const loadUserStatus = async () => {
+    try {
+      const user = auth.currentUser;
+      if (!user) {
+        setLoading(false);
+        return;
+      }
+
+      // Check if faculty
+      const facultyRef = doc(db, 'faculty', user.uid);
+      const facultySnap = await getDoc(facultyRef);
+
+      if (facultySnap.exists()) {
+        const data = facultySnap.data();
+        setUserData(data);
+        setUserRole('faculty');
+        setFacultyId(user.uid);
+        if (data.isStaffAdvisor) {
+          // LEGACY CHECK: If faculty doc has isStaffAdvisor=true, we might need to migrate or just use it.
+          // For now, we prioritize the new 'staffAdvisors' collection check below.
+        }
+
+        // CHECK NEW COLLECTION: staffAdvisors/{facultyId}
+        const saRef = doc(db, 'staffAdvisors', user.uid);
+        const saSnap = await getDoc(saRef);
+
+        if (saSnap.exists()) {
+          const saData = saSnap.data();
+          console.log('[StaffAdvisor] Found in staffAdvisors collection:', saData);
+
+          setIsStaffAdvisor(true);
+          setAdvisorJoiningYear(saData.joiningYear); // Stored as 'joiningYear' in new schema
+
+          // Auto-connect logic
+          const deptCode = saData.departmentName || saData.departmentId || data.department || data.departmentCode;
+          autoConnectReps(saData.joiningYear, deptCode);
+        } else {
+          console.log('[StaffAdvisor] Not found in staffAdvisors collection.');
+          setShowPrompt(true);
+        }
+      } else {
+        // Check if Rep (in users collection)
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+          if (!data.isRepresentative) {
+            Alert.alert('Access Denied', 'Only Class Representatives can access this portal.');
+            navigation.goBack();
+            return;
+          }
+          setUserData(data);
+          setUserRole('rep');
+
+          // Rep/Student/Official Rep needs to find their Staff Advisor
+          const joiningYear = data.joiningYear;
+          const dept = data.department || data.departmentCode || data.departmentId;
+
+          console.log('[StaffAdvisor] Rep looking for advisor:', { joiningYear, dept });
+
+          if (!joiningYear || !dept) {
+            console.warn('[StaffAdvisor] Rep profile incomplete:', { joiningYear, dept });
+            Alert.alert('Configuration Issue', 'Your profile is missing department or joining year information.');
+            navigation.goBack();
+            return;
+          }
+
+          const advisorQuery = query(
+            collection(db, 'faculty'),
+            where('isStaffAdvisor', '==', true),
+            where('advisorJoiningYear', '==', joiningYear),
+            where('department', '==', dept),
+            limit(1)
+          );
+
+          console.log('[StaffAdvisor] Fetching advisor document...');
+          const advisorSnap = await getDocs(advisorQuery);
+          if (!advisorSnap.empty) {
+            const advisorDoc = advisorSnap.docs[0];
+            const advisorData = advisorDoc.data();
+            console.log('[StaffAdvisor] Found Advisor:', advisorData.name);
+            setFacultyId(advisorDoc.id);
+            setIsStaffAdvisor(true);
+            setAdvisorJoiningYear(joiningYear);
+            setupRealtimeSubscriptions(advisorDoc.id, joiningYear);
+            setConnectedRep({ id: user.uid, name: data.name, joiningYear: data.joiningYear });
+            setUserData(prev => ({ ...prev, advisorName: advisorData.name }));
+          } else {
+            console.warn('[StaffAdvisor] No advisor found for:', { joiningYear, dept });
+            Alert.alert('No Advisor', 'Your class does not have an assigned Staff Advisor yet.');
+            navigation.goBack();
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error loading user status:', error);
+      Alert.alert('Error', 'Failed to load status');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const autoConnectReps = async (year, department) => {
+    if (!year || !department) return;
+
+    try {
+      setConnectionStatus('connecting');
+      const targetYear = parseInt(year) || year;
+      const targetDept = department?.toString().toUpperCase();
+      console.log(`[StaffAdvisor] Auto-connecting reps for Year: ${targetYear}, Dept: ${targetDept}`);
+
+      let foundRepsList = [];
+      const usersRef = collection(db, 'users');
+      const years = ['year_1', 'year_2', 'year_3', 'year_4'];
+      const deptId = targetDept === 'INFORMATION TECHNOLOGY' ? 'IT' : targetDept;
+
+      for (const y of years) {
+        const crRef = collection(db, 'classrepresentative', y, `department_${deptId}`);
+        const crSnap = await getDocs(crRef);
+
+        for (const doc of crSnap.docs) {
+          const crData = doc.data();
+          if (crData.active === false) continue;
+
+          let isMatch = false;
+          let repData = null;
+          const email = crData.email?.toLowerCase().trim();
+
+          if (email) {
+            const emailQ = query(usersRef, where('email', '==', email));
+            const userSnap = await getDocs(emailQ);
+
+            if (!userSnap.empty) {
+              const userData = userSnap.docs[0].data();
+              const rawUserYear = userData.joiningYear;
+              const rawCrYear = crData.joiningYear;
+              const userJoiningYear = parseInt(rawUserYear) || rawUserYear || parseInt(rawCrYear) || rawCrYear;
+
+              if (userJoiningYear == targetYear) {
+                isMatch = true;
+                repData = { id: userSnap.docs[0].id, ...userData };
+              }
+            } else {
+              const crJoiningYear = parseInt(crData.joiningYear) || crData.joiningYear || targetYear;
+              if (crJoiningYear == targetYear) {
+                isMatch = true;
+                repData = {
+                  id: doc.id,
+                  ...crData,
+                  joiningYear: targetYear,
+                  department: targetDept
+                };
+              }
+            }
+          }
+
+          if (isMatch && repData) {
+            if (!foundRepsList.some(r => r.email === repData.email)) {
+              foundRepsList.push(repData);
+            }
+          }
+        }
+      }
+
+      // --- STAGE 2: Direct Student Profile Check (User Request) ---
+      console.log(`[StaffAdvisor] 🔍 Discovery Stage 2: Checking 'students' collection for Year ${targetYear}`);
+
+      const studentsQuery = query(
+        collectionGroup(db, 'students'),
+        where('isRepresentative', '==', true),
+        where('joiningYear', '==', targetYear)
+      );
+
+      const studentsSnap = await getDocs(studentsQuery);
+      console.log(`[StaffAdvisor] Found ${studentsSnap.size} student reps for year ${targetYear}`);
+
+      studentsSnap.forEach(doc => {
+        const data = doc.data();
+        const repDept = (data.departmentName || data.department || data.dept)?.toString().toUpperCase();
+
+        console.log(`[StaffAdvisor] Checking Student Rep: ${data.name}, Dept: ${repDept}`);
+
+        if (repDept && (repDept === targetDept || repDept.includes(targetDept) || targetDept.includes(repDept))) {
+          const repData = { id: doc.id, ...data };
+
+          if (!foundRepsList.some(r => r.email === repData.email)) {
+            console.log(`[StaffAdvisor] ✅ Linked Rep from Students: ${repData.name}`);
+            foundRepsList.push(repData);
+          }
+        }
+      });
+
+      setConnectedReps(foundRepsList);
+
+      if (foundRepsList.length > 0) {
+        setConnectionStatus('connected');
+        const user = auth.currentUser;
+        setupRealtimeSubscriptions(user.uid, targetYear);
+      } else {
+        setConnectionStatus('awaiting');
+      }
+
+    } catch (error) {
+      console.error('[StaffAdvisor] Error in auto-connection:', error);
+      setConnectionStatus('awaiting');
+    }
+  };
+
+
+  const setupRealtimeSubscriptions = (fId, year) => {
+    if (!fId || !year) {
+      console.warn('Cannot setup subscriptions: missing facultyId or year', { fId, year });
+      return () => { };
+    }
+
+    const targetYear = year.toString();
+
+    // Get department from userData
+    const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
+    const deptDoc = `department_${deptCode}`;
+    const yearSubcol = `year_${targetYear}`;
+
+    console.log('[StaffAdvisor] Subscribing to todos:', deptDoc, '/', yearSubcol);
+
+    // Subscribe to Tasks using new hierarchical structure
+    const tasksRef = collection(db, 'todos', deptDoc, yearSubcol);
+
+    const unsubTasks = onSnapshot(tasksRef, (snap) => {
+      const tasksList = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort desc by createdAt
+      tasksList.sort((a, b) => {
+        const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
+        const tB = b.createdAt?.toMillis ? b.createdAt.toMillis() : 0;
+        return tB - tA;
+      });
+      setTasks(tasksList);
+    }, (error) => {
+      console.error('[StaffAdvisor] Tasks subscription error:', error);
+    });
+
+    // Subscribe to Chat (Client-side sorting to avoid index)
+    const chatQuery = query(
+      collection(db, 'staffAdvisorChats'),
+      where('facultyId', '==', fId),
+      where('advisorJoiningYear', '==', targetYear)
+    );
+
+    const unsubChat = onSnapshot(chatQuery, (snap) => {
+      const chatList = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Sort asc by timestamp
+      chatList.sort((a, b) => {
+        const tA = a.timestamp?.toMillis ? a.timestamp.toMillis() : 0;
+        const tB = b.timestamp?.toMillis ? b.timestamp.toMillis() : 0;
+        return tA - tB;
+      });
+      setMessages(chatList);
+    });
+
+    return () => {
+      unsubTasks();
+      unsubChat();
+    };
+  };
+
+  const handleEnrollConfirm = async () => {
+    if (!joiningYear || joiningYear.length !== 4 || isNaN(joiningYear)) {
+      Alert.alert('Error', 'Please enter a valid 4-digit joining year');
       return;
     }
 
-    const newTask = {
-      id: String(Date.now()),
-      title: newTaskTitle,
-      assignedTo: 'Class Rep',
-      dueDate: newTaskDueDate,
-      status: 'pending',
-    };
+    try {
+      setLoading(true);
+      const user = auth.currentUser;
+      const facultyRef = doc(db, 'faculty', user.uid);
+      // We don't modify 'faculty' doc anymore for role storage, only for reference if needed.
+      // Instead, we create a document in 'staffAdvisors' collection.
 
-    setTasks([...tasks, newTask]);
-    setNewTaskTitle('');
-    setNewTaskDueDate('');
-    setShowAddTaskModal(false);
-    Alert.alert('Success', 'Task assigned successfully');
+      const deptCode = userData?.department || userData?.departmentCode || userData?.departmentName || 'UNKNOWN';
+      const deptName = userData?.departmentName || deptCode;
+
+      const saData = {
+        isStaffAdvisor: true,
+        joiningYear: joiningYear.toString(), // Use 'joiningYear' to match new schema request
+        departmentId: deptCode,
+        departmentName: deptName,
+        createdAt: serverTimestamp()
+      };
+
+      await setDoc(doc(db, 'staffAdvisors', user.uid), saData);
+
+      setIsStaffAdvisor(true);
+      setAdvisorJoiningYear(joiningYear);
+      setShowYearInput(false);
+      setFacultyId(user.uid);
+
+      autoConnectReps(joiningYear, deptCode);
+      setupRealtimeSubscriptions(user.uid, joiningYear);
+
+      Alert.alert('Success', `You are now connected as Staff Advisor for the ${joiningYear} batch.`);
+    } catch (error) {
+      console.error('Enrollment error:', error);
+      Alert.alert('Error', 'Failed to confirm enrollment');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handleChatWithRep = () => {
-    Alert.alert('Chat', `Start conversation with ${classInfo.representative}`);
+  const handleAddTask = async () => {
+    if (!newTaskTitle.trim()) {
+      Alert.alert('Error', 'Task title is required');
+      return;
+    }
+
+    try {
+      const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
+      const deptDoc = `department_${deptCode}`;
+      const yearSubcol = `year_${advisorJoiningYear}`;
+
+      await addDoc(collection(db, 'todos', deptDoc, yearSubcol), {
+        title: newTaskTitle.trim(),
+        description: newTaskDescription.trim() || '',
+        status: 'pending',
+        createdBy: auth.currentUser?.uid,
+        completedBy: null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+
+      setNewTaskTitle('');
+      setNewTaskDescription('');
+      setShowAddTaskModal(false);
+    } catch (error) {
+      console.error('Error adding task:', error);
+      Alert.alert('Error', 'Failed to add task');
+    }
+  };
+
+  const handleEditTask = (task) => {
+    setEditingTask(task);
+    setEditTaskTitle(task.title);
+    setEditTaskDescription(task.description || '');
+    setShowEditTaskModal(true);
+  };
+
+  const handleUpdateTask = async () => {
+    if (!editTaskTitle.trim()) {
+      Alert.alert('Error', 'Task title is required');
+      return;
+    }
+
+    try {
+      const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
+      const deptDoc = `department_${deptCode}`;
+      const yearSubcol = `year_${advisorJoiningYear}`;
+
+      const taskRef = doc(db, 'todos', deptDoc, yearSubcol, editingTask.id);
+      await updateDoc(taskRef, {
+        title: editTaskTitle.trim(),
+        description: editTaskDescription.trim() || '',
+        updatedAt: serverTimestamp()
+      });
+
+      setShowEditTaskModal(false);
+      setEditingTask(null);
+      Alert.alert('Success', 'Task updated successfully');
+    } catch (error) {
+      console.error('Error updating task:', error);
+      Alert.alert('Error', 'Failed to update task');
+    }
+  };
+
+  const handleDeleteTask = (taskId) => {
+    if (userRole !== 'faculty') {
+      Alert.alert('Permission Denied', 'Only Staff Advisors can delete tasks.');
+      return;
+    }
+    Alert.alert(
+      'Delete Task',
+      'Are you sure you want to delete this task?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          onPress: async () => {
+            try {
+              const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
+              const deptDoc = `department_${deptCode}`;
+              const yearSubcol = `year_${advisorJoiningYear}`;
+
+              await deleteDoc(doc(db, 'todos', deptDoc, yearSubcol, taskId));
+            } catch (error) {
+              console.error('Error deleting task:', error);
+              Alert.alert('Error', 'Failed to delete task');
+            }
+          },
+          style: 'destructive'
+        }
+      ]
+    );
+  };
+
+  const handleToggleTaskStatus = async (task) => {
+    try {
+      const taskRef = doc(db, 'staffAdvisorTodos', task.id);
+      const newStatus = task.status === 'completed' ? 'pending' : 'completed';
+      await updateDoc(taskRef, {
+        status: newStatus,
+        completedBy: newStatus === 'completed' ? 'faculty' : null,
+        completedAt: newStatus === 'completed' ? serverTimestamp() : null
+      });
+    } catch (error) {
+      console.error('Error updating task status:', error);
+    }
+  };
+
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) return;
+
+    try {
+      await addDoc(collection(db, 'staffAdvisorChats'), {
+        facultyId: facultyId,
+        advisorJoiningYear: advisorJoiningYear,
+        sender: userRole,
+        senderName: userData.name,
+        message: inputMessage.trim(),
+        timestamp: serverTimestamp()
+      });
+      setInputMessage('');
+    } catch (error) {
+      console.error('Error sending message:', error);
+    }
   };
 
   const renderOverviewTab = () => (
     <View style={styles.tabContent}>
-      {/* Class Info Card */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Class Information</Text>
+        <Text style={styles.cardTitle}>Advisor Information</Text>
         <View style={styles.infoRow}>
-          <Text style={styles.label}>Class:</Text>
-          <Text style={styles.value}>{classInfo.name}</Text>
+          <Text style={styles.label}>Assigned Joining Year:</Text>
+          <Text style={styles.value}>{advisorJoiningYear}</Text>
         </View>
         <View style={styles.infoRow}>
-          <Text style={styles.label}>Strength:</Text>
-          <Text style={styles.value}>{classInfo.strength} students</Text>
+          <Text style={styles.label}>Department:</Text>
+          <Text style={styles.value}>{(userData?.department || userData?.departmentName || 'N/A').toUpperCase()}</Text>
         </View>
         <View style={styles.infoRow}>
-          <Text style={styles.label}>Class Rep:</Text>
-          <Text style={styles.value}>{classInfo.representative}</Text>
+          <Text style={styles.label}>{userRole === 'faculty' ? 'Connected Rep:' : 'Staff Advisor:'}</Text>
+          <View style={{ flex: 1, alignItems: 'flex-end' }}>
+            {userRole === 'faculty' ? (
+              connectedReps.length > 0 ? (
+                <View>
+                  {connectedReps.map((rep, idx) => (
+                    <Text key={idx} style={[styles.value, { textAlign: 'right', marginTop: idx > 0 ? 4 : 0 }]}>
+                      {rep.name} ({rep.joiningYear} Batch)
+                    </Text>
+                  ))}
+                </View>
+              ) : (
+                <Text style={[styles.value, { color: connectionStatus === 'connecting' ? '#f39c12' : '#e74c3c' }]}>
+                  {connectionStatus === 'connecting' ? 'Searching...' : 'No Reps Linked'}
+                </Text>
+              )
+            ) : (
+              <Text style={styles.value}>{userData?.advisorName || 'Staff Advisor'}</Text>
+            )}
+          </View>
         </View>
-        <View style={styles.infoRow}>
-          <Text style={styles.label}>Rep Contact:</Text>
-          <Text style={styles.value}>{classInfo.repContact}</Text>
-        </View>
-
-        <TouchableOpacity
-          style={styles.chatButton}
-          onPress={handleChatWithRep}
-        >
-          <Ionicons name="chatbubble" size={16} color="#ffffff" />
-          <Text style={styles.chatButtonText}>Chat with Class Rep</Text>
-        </TouchableOpacity>
       </View>
 
-      {/* Attendance Overview */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>Attendance Overview</Text>
+        <Text style={styles.cardTitle}>Quick Stats</Text>
         <View style={styles.statGrid}>
           <View style={styles.statItem}>
-            <Text style={styles.statNumber}>{attendanceStats.totalClasses}</Text>
-            <Text style={styles.statLabel}>Total Classes</Text>
+            <Text style={styles.statNumber}>{tasks.length}</Text>
+            <Text style={styles.statLabel}>Total Tasks</Text>
           </View>
           <View style={styles.statItem}>
-            <Text style={[styles.statNumber, styles.statGood]}>{attendanceStats.averageAttendance}%</Text>
-            <Text style={styles.statLabel}>Avg Attendance</Text>
+            <Text style={[styles.statNumber, styles.statGood]}>
+              {tasks.filter(t => t.status === 'completed').length}
+            </Text>
+            <Text style={styles.statLabel}>Completed</Text>
           </View>
           <View style={styles.statItem}>
-            <Text style={[styles.statNumber, styles.statWarning]}>{attendanceStats.lowAttendanceStudents}</Text>
-            <Text style={styles.statLabel}>Low Attendance</Text>
+            <Text style={[styles.statNumber, styles.statWarning]}>
+              {tasks.filter(t => t.status === 'pending').length}
+            </Text>
+            <Text style={styles.statLabel}>Pending</Text>
           </View>
         </View>
-        <TouchableOpacity style={styles.viewButton}>
-          <Text style={styles.viewButtonText}>View Detailed Report</Text>
-          <Ionicons name="chevron-forward" size={14} color="#3498db" />
-        </TouchableOpacity>
       </View>
     </View>
   );
 
   const renderTasksTab = () => (
-    <View style={styles.tabContent}>
-      <View style={styles.card}>
-        <View style={styles.cardHeaderWithButton}>
-          <Text style={styles.cardTitle}>Assigned Tasks</Text>
-          <TouchableOpacity
-            style={styles.smallButton}
-            onPress={() => setShowAddTaskModal(true)}
-          >
-            <Ionicons name="add" size={16} color="#3498db" />
+    <View style={{ flex: 1 }}>
+      <View style={styles.todoHeader}>
+        <View style={styles.todoHeaderTop}>
+          <TouchableOpacity onPress={() => setActiveTab('overview')} style={styles.backButton}>
+            <Ionicons name="chevron-back" size={24} color="#fff" />
+            <Text style={styles.backText}>Back</Text>
           </TouchableOpacity>
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+            <View style={styles.todoHeaderIcons}>
+              <Ionicons name="people" size={20} color="#fff" />
+              <Text style={styles.todoCountText}>{tasks.length}</Text>
+            </View>
+            {userRole === 'faculty' && (
+              <TouchableOpacity
+                onPress={() => setShowAddTaskModal(true)}
+                style={{ marginLeft: 15 }}
+              >
+                <Ionicons name="add-circle" size={32} color="#fff" />
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
+        <Text style={styles.todoHeaderText}>To-Do Tasks</Text>
+      </View>
+
+      <View style={styles.todoListContainer}>
         <FlatList
           data={tasks}
           keyExtractor={item => item.id}
           scrollEnabled={false}
           renderItem={({ item }) => (
-            <View style={[styles.taskItem, item.status === 'completed' && styles.taskItemCompleted]}>
-              <View style={styles.taskCheckmark}>
-                <Ionicons
-                  name={item.status === 'completed' ? 'checkbox' : 'square-outline'}
-                  size={20}
-                  color={item.status === 'completed' ? '#2ecc71' : '#bdc3c7'}
-                />
-              </View>
-              <View style={styles.taskInfo}>
-                <Text style={[styles.taskTitle, item.status === 'completed' && styles.taskTitleCompleted]}>
-                  {item.title}
-                </Text>
-                <View style={styles.taskMeta}>
-                  <Ionicons name="person-circle" size={12} color="#7f8c8d" />
-                  <Text style={styles.taskMetaText}>{item.assignedTo}</Text>
-                  <Ionicons name="calendar" size={12} color="#7f8c8d" style={styles.metaIcon} />
-                  <Text style={styles.taskMetaText}>{item.dueDate}</Text>
+            <View style={[styles.taskItemContainer, item.status === 'completed' && styles.taskItemCompleted]}>
+              <TouchableOpacity
+                style={styles.taskItem}
+                onPress={() => handleToggleTaskStatus(item)}
+              >
+                <View style={styles.taskCheckmark}>
+                  <Ionicons
+                    name={item.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline'}
+                    size={26}
+                    color={item.status === 'completed' ? '#2ecc71' : '#bdc3c7'}
+                  />
                 </View>
-              </View>
-              <View style={[styles.statusBadge, item.status === 'completed' && styles.statusBadgeCompleted]}>
-                <Text style={styles.statusText}>{item.status}</Text>
-              </View>
+                <View style={styles.taskInfo}>
+                  <Text style={[styles.taskTitle, item.status === 'completed' && styles.taskTitleCompleted]}>
+                    {item.title}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+              {userRole === 'faculty' && (
+                <View style={styles.taskActions}>
+                  <TouchableOpacity
+                    style={styles.actionButton}
+                    onPress={() => handleEditTask(item)}
+                  >
+                    <Ionicons name="create-outline" size={18} color="#3498db" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.actionButton}
+                    onPress={() => handleDeleteTask(item.id)}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="#e74c3c" />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
           )}
         />
@@ -183,117 +647,58 @@ const StaffAdvisorScreen = () => {
     </View>
   );
 
-  const renderSyllabusTab = () => (
-    <View style={styles.tabContent}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Syllabus Coverage</Text>
-        <FlatList
-          data={syllabusProgress}
-          keyExtractor={item => item.id}
-          scrollEnabled={false}
-          renderItem={({ item }) => (
-            <View style={styles.progressItem}>
-              <View style={styles.progressHeader}>
-                <Text style={styles.progressTitle}>{item.unit}</Text>
-                <Text style={[styles.progressPercent, { color: item.coverage === 100 ? '#2ecc71' : '#f39c12' }]}>
-                  {item.coverage}%
-                </Text>
-              </View>
-              <View style={styles.progressBar}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    { width: `${item.coverage}%`, backgroundColor: item.coverage === 100 ? '#2ecc71' : '#f39c12' },
-                  ]}
-                />
-              </View>
-              <Text style={styles.progressStatus}>{item.status}</Text>
+
+  const renderCommunicationTab = () => (
+    <View style={[styles.tabContent, { height: 400 }]}>
+      <FlatList
+        ref={flatListRef}
+        data={messages}
+        renderItem={({ item }) => (
+          <View style={[
+            styles.messageContainer,
+            item.sender === userRole ? styles.messageRight : styles.messageLeft
+          ]}>
+            <View style={[
+              styles.messageBubble,
+              item.sender === userRole ? styles.bubbleRight : styles.bubbleLeft
+            ]}>
+              <Text style={[styles.senderName, item.sender === userRole && { color: '#eee' }]}>
+                {item.sender === userRole ? 'You' : item.senderName}
+              </Text>
+              <Text style={[styles.messageText, item.sender === userRole && { color: '#fff' }]}>
+                {item.message}
+              </Text>
             </View>
-          )}
+          </View>
+        )}
+        keyExtractor={item => item.id}
+        onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
+      />
+      <View style={styles.inputBar}>
+        <TextInput
+          style={styles.chatInput}
+          placeholder="Type a message..."
+          value={inputMessage}
+          onChangeText={setInputMessage}
         />
+        <TouchableOpacity style={styles.sendButtonChat} onPress={handleSendMessage}>
+          <Ionicons name="send" size={20} color="#ffffff" />
+        </TouchableOpacity>
       </View>
     </View>
   );
 
-  const renderAnnouncementsTab = () => (
-    <View style={styles.tabContent}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Academic Announcements</Text>
-        <FlatList
-          data={announcements}
-          keyExtractor={item => item.id}
-          scrollEnabled={false}
-          renderItem={({ item }) => (
-            <View style={styles.announcementItem}>
-              <View style={styles.announcementIcon}>
-                <Ionicons name="megaphone" size={20} color="#3498db" />
-              </View>
-              <View style={styles.announcementContent}>
-                <Text style={styles.announcementTitle}>{item.title}</Text>
-                <Text style={styles.announcementMessage}>{item.message}</Text>
-                <Text style={styles.announcementDate}>{item.date}</Text>
-              </View>
-            </View>
-          )}
-        />
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#9b59b6" />
       </View>
-    </View>
-  );
-
-  const renderStudentProgressTab = () => (
-    <View style={styles.tabContent}>
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Student Academic Progress</Text>
-        <FlatList
-          data={studentProgress}
-          keyExtractor={item => item.id}
-          scrollEnabled={false}
-          renderItem={({ item }) => (
-            <View style={styles.studentProgressItem}>
-              <View style={styles.studentAvatar}>
-                <Text style={styles.avatarText}>{item.name.charAt(0)}</Text>
-              </View>
-              <View style={styles.studentProgressInfo}>
-                <Text style={styles.studentName}>{item.name}</Text>
-                <Text style={styles.studentStatus}>{item.status}</Text>
-              </View>
-              <View style={styles.gradeCard}>
-                <Text style={styles.gradeText}>{item.grades}</Text>
-              </View>
-            </View>
-          )}
-        />
-      </View>
-    </View>
-  );
-
-  const renderClassTodoTab = () => (
-    <View style={styles.tabContent}>
-      <View style={styles.card}>
-        <View style={styles.cardHeaderWithButton}>
-          <Text style={styles.cardTitle}>Class To-Do List</Text>
-          <TouchableOpacity style={styles.smallButton}>
-            <Ionicons name="add" size={16} color="#2ecc71" />
-          </TouchableOpacity>
-        </View>
-        <View style={styles.todoItem}>
-          <Ionicons name="checkmark-circle" size={20} color="#2ecc71" />
-          <Text style={styles.todoText}>Prepare class materials for next session</Text>
-        </View>
-        <View style={styles.todoItem}>
-          <Ionicons name="square-outline" size={20} color="#bdc3c7" />
-          <Text style={styles.todoText}>Review student assignments</Text>
-        </View>
-        <View style={styles.todoItem}>
-          <Ionicons name="square-outline" size={20} color="#bdc3c7" />
-          <Text style={styles.todoText}>Plan lab session activities</Text>
-        </View>
-      </View>
-    </View>
-  );
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()}>
           <Ionicons name="chevron-back" size={24} color="#2c3e50" />
@@ -302,49 +707,147 @@ const StaffAdvisorScreen = () => {
         <View style={{ width: 24 }} />
       </View>
 
-      <View style={styles.tabBar}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {[
-            { id: 'overview', label: 'Overview', icon: 'home' },
-            { id: 'tasks', label: 'Tasks', icon: 'clipboard' },
-            { id: 'syllabus', label: 'Syllabus', icon: 'book' },
-            { id: 'announcements', label: 'Announce', icon: 'megaphone' },
-            { id: 'progress', label: 'Progress', icon: 'trending-up' },
-            { id: 'todo', label: 'Class To-Do', icon: 'list' },
-          ].map(tab => (
-            <TouchableOpacity
-              key={tab.id}
-              style={[styles.tab, activeTab === tab.id && styles.tabActive]}
-              onPress={() => setActiveTab(tab.id)}
-            >
-              <Ionicons
-                name={tab.icon}
-                size={16}
-                color={activeTab === tab.id ? '#9b59b6' : '#7f8c8d'}
-              />
-              <Text style={[styles.tabLabel, activeTab === tab.id && styles.tabLabelActive]}>
-                {tab.label}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+      {isStaffAdvisor && (
+        <>
+          <View style={styles.tabBar}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12 }}>
+              {[
+                { id: 'overview', label: 'Overview', icon: 'home', enabled: true },
+                { id: 'tasks', label: 'To-Do Management', icon: 'list', enabled: true },
+                { id: 'chat', label: 'Communication', icon: 'chatbubbles', enabled: true }
+              ].map(tab => (
+                <TouchableOpacity
+                  key={tab.id}
+                  style={[
+                    styles.tab,
+                    activeTab === tab.id && styles.tabActive,
+                    !tab.enabled && { opacity: 0.4 }
+                  ]}
+                  onPress={() => {
+                    if (tab.enabled) {
+                      setActiveTab(tab.id);
+                    } else {
+                      Alert.alert('Not Connected', 'Please connect with the Class Representative to enable this feature.');
+                    }
+                  }}
+                >
+                  <Ionicons
+                    name={tab.icon}
+                    size={16}
+                    color={activeTab === tab.id ? '#9b59b6' : '#7f8c8d'}
+                  />
+                  <Text style={[styles.tabLabel, activeTab === tab.id && styles.tabLabelActive]}>
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        {activeTab === 'overview' && renderOverviewTab()}
-        {activeTab === 'tasks' && renderTasksTab()}
-        {activeTab === 'syllabus' && renderSyllabusTab()}
-        {activeTab === 'announcements' && renderAnnouncementsTab()}
-        {activeTab === 'progress' && renderStudentProgressTab()}
-        {activeTab === 'todo' && renderClassTodoTab()}
-      </ScrollView>
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            {activeTab === 'overview' && renderOverviewTab()}
+            {activeTab === 'tasks' && renderTasksTab()}
+            {activeTab === 'chat' && renderCommunicationTab()}
+          </ScrollView>
+        </>
+      )}
+
+      {/* Enrollment Prompt 1 */}
+      <Modal visible={showPrompt} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.enrollModal}>
+            <Text style={styles.modalTitle}>Staff Advisor Portal</Text>
+            <Text style={styles.modalMessage}>Are you a Staff Advisor?</Text>
+            <View style={styles.enrollButtons}>
+              <TouchableOpacity
+                style={[styles.enrollBtn, styles.btnYes]}
+                onPress={() => {
+                  setShowPrompt(false);
+                  setShowYearInput(true);
+                }}
+              >
+                <Text style={styles.btnTextWhite}>Yes</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.enrollBtn, styles.btnNo]}
+                onPress={() => {
+                  setShowPrompt(false);
+                  setShowNoAdvisorMsg(true);
+                }}
+              >
+                <Text style={styles.btnTextDark}>No</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* No Advisor Message */}
+      <Modal visible={showNoAdvisorMsg} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.enrollModal}>
+            <Text style={styles.modalMessage}>
+              This section is accessible only to Staff Advisors.{"\n"}
+              You may return if you are assigned later.
+            </Text>
+            <TouchableOpacity
+              style={styles.confirmBtn}
+              onPress={() => {
+                setShowNoAdvisorMsg(false);
+                navigation.goBack();
+              }}
+            >
+              <Text style={styles.confirmText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Year Input Modal */}
+      <Modal visible={showYearInput} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.enrollModal}>
+            <Text style={styles.modalTitle}>Advisor Batch Details</Text>
+            <Text style={styles.modalMessage}>
+              Enter the joining year of the batch you are advising.
+            </Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 2022"
+              value={joiningYear}
+              onChangeText={(text) => setJoiningYear(text.replace(/[^0-9]/g, '').slice(0, 4))}
+              keyboardType="numeric"
+              maxLength={4}
+            />
+
+            <TouchableOpacity
+              style={styles.confirmBtn}
+              onPress={handleEnrollConfirm}
+            >
+              <Text style={styles.confirmText}>Confirm & Continue</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={{ marginTop: 15, alignItems: 'center' }}
+              onPress={() => {
+                setShowYearInput(false);
+                setShowPrompt(true);
+              }}
+            >
+              <Text style={{ color: '#7f8c8d' }}>Back</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
 
       {/* Add Task Modal */}
-      <Modal visible={showAddTaskModal} transparent={true} animationType="slide">
+      <Modal visible={showAddTaskModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <View style={styles.taskModal}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Assign Task to Class Rep</Text>
+              <Text style={styles.modalTitle}>Add Task for Class</Text>
               <TouchableOpacity onPress={() => setShowAddTaskModal(false)}>
                 <Ionicons name="close" size={24} color="#2c3e50" />
               </TouchableOpacity>
@@ -352,24 +855,56 @@ const StaffAdvisorScreen = () => {
 
             <TextInput
               style={styles.input}
-              placeholder="Task Title"
+              placeholder="Task Title (e.g., Collect Internals)"
               value={newTaskTitle}
               onChangeText={setNewTaskTitle}
-              placeholderTextColor="#bdc3c7"
-            />
-            <TextInput
-              style={styles.input}
-              placeholder="Due Date (YYYY-MM-DD)"
-              value={newTaskDueDate}
-              onChangeText={setNewTaskDueDate}
-              placeholderTextColor="#bdc3c7"
             />
 
-            <TouchableOpacity
-              style={styles.submitButton}
-              onPress={handleAddTask}
-            >
-              <Text style={styles.submitButtonText}>Assign Task</Text>
+            <TextInput
+              style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
+              placeholder="Description (optional)"
+              value={newTaskDescription}
+              onChangeText={setNewTaskDescription}
+              multiline
+              numberOfLines={3}
+            />
+
+            <TouchableOpacity style={styles.submitBtn} onPress={handleAddTask}>
+              <Text style={styles.submitBtnText}>Create Task</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Edit Task Modal */}
+      <Modal visible={showEditTaskModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.taskModal}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Task</Text>
+              <TouchableOpacity onPress={() => setShowEditTaskModal(false)}>
+                <Ionicons name="close" size={24} color="#2c3e50" />
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.input}
+              placeholder="Task Title"
+              value={editTaskTitle}
+              onChangeText={setEditTaskTitle}
+            />
+
+            <TextInput
+              style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
+              placeholder="Description (optional)"
+              value={editTaskDescription}
+              onChangeText={setEditTaskDescription}
+              multiline
+              numberOfLines={3}
+            />
+
+            <TouchableOpacity style={styles.submitBtn} onPress={handleUpdateTask}>
+              <Text style={styles.submitBtnText}>Update Task</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -383,15 +918,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f8f9fa',
   },
-  header: {
-    backgroundColor: '#ffffff',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 15,
+    backgroundColor: '#fff',
     borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
+    borderBottomColor: '#f1f1f1',
   },
   headerTitle: {
     fontSize: 18,
@@ -399,353 +941,347 @@ const styles = StyleSheet.create({
     color: '#2c3e50',
   },
   tabBar: {
-    backgroundColor: '#ffffff',
+    backgroundColor: '#fff',
+    paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
-    paddingVertical: 8,
+    borderBottomColor: '#f1f1f1',
   },
   tab: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 16,
     paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginHorizontal: 4,
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
+    marginRight: 10,
+    borderRadius: 20,
+    backgroundColor: '#f8f9fa',
   },
   tabActive: {
-    borderBottomColor: '#9b59b6',
+    backgroundColor: '#f0e7f6',
   },
   tabLabel: {
-    fontSize: 11,
-    fontWeight: '600',
+    marginLeft: 6,
+    fontSize: 14,
     color: '#7f8c8d',
-    marginLeft: 4,
+    fontWeight: '500',
   },
   tabLabelActive: {
     color: '#9b59b6',
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    fontWeight: '700',
   },
   tabContent: {
-    marginBottom: 20,
+    padding: 20,
   },
   card: {
-    backgroundColor: '#ffffff',
-    borderRadius: 8,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    marginBottom: 12,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 20,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
   },
   cardTitle: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '700',
     color: '#2c3e50',
-    marginBottom: 12,
-  },
-  cardHeaderWithButton: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 15,
   },
   infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
+    marginBottom: 10,
   },
   label: {
-    fontSize: 11,
-    fontWeight: '600',
+    fontSize: 14,
     color: '#7f8c8d',
   },
   value: {
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '600',
     color: '#2c3e50',
-  },
-  chatButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#9b59b6',
-    borderRadius: 6,
-    paddingVertical: 10,
-    marginTop: 12,
-  },
-  chatButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#ffffff',
-    marginLeft: 6,
   },
   statGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 12,
   },
   statItem: {
-    flex: 1,
     alignItems: 'center',
-    paddingVertical: 10,
-    backgroundColor: '#f8f9fa',
-    borderRadius: 6,
-    marginHorizontal: 3,
+    flex: 1,
   },
   statNumber: {
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 20,
+    fontWeight: 'BOLD',
     color: '#2c3e50',
+  },
+  statLabel: {
+    fontSize: 12,
+    color: '#7f8c8d',
+    marginTop: 4,
   },
   statGood: {
     color: '#2ecc71',
   },
   statWarning: {
-    color: '#e74c3c',
+    color: '#f39c12',
   },
-  statLabel: {
-    fontSize: 9,
+  // Communication Styles
+  messageContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 4,
+    width: '100%',
+  },
+  messageLeft: {
+    alignItems: 'flex-start',
+  },
+  messageRight: {
+    alignItems: 'flex-end',
+  },
+  messageBubble: {
+    maxWidth: '80%',
+    padding: 12,
+    borderRadius: 16,
+  },
+  bubbleLeft: {
+    backgroundColor: '#f1f1f1',
+    borderBottomLeftRadius: 4,
+  },
+  bubbleRight: {
+    backgroundColor: '#9b59b6',
+    borderBottomRightRadius: 4,
+  },
+  senderName: {
+    fontSize: 11,
+    fontWeight: '700',
     color: '#7f8c8d',
-    marginTop: 4,
+    marginBottom: 4,
   },
-  viewButton: {
+  messageText: {
+    fontSize: 14,
+    color: '#2c3e50',
+  },
+  inputBar: {
+    flexDirection: 'row',
+    padding: 10,
+    backgroundColor: '#fff',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#f1f1f1',
+  },
+  chatInput: {
+    flex: 1,
+    height: 40,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 20,
+    paddingHorizontal: 15,
+    marginRight: 10,
+  },
+  sendButtonChat: {
+    width: 40,
+    height: 40,
+    backgroundColor: '#9b59b6',
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  // Enrollment Styles
+  enrollModal: {
+    backgroundColor: '#fff',
+    width: '85%',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#34495e',
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 20,
+  },
+  enrollButtons: {
+    flexDirection: 'row',
+    width: '100%',
+    justifyContent: 'space-between',
+  },
+  enrollBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginHorizontal: 5,
+  },
+  btnYes: {
+    backgroundColor: '#2ecc71',
+  },
+  btnNo: {
+    backgroundColor: '#ecf0f1',
+  },
+  btnTextWhite: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  btnTextDark: {
+    color: '#2c3e50',
+    fontWeight: 'bold',
+  },
+  confirmBtn: {
+    backgroundColor: '#9b59b6',
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 8,
+    width: '100%',
+    alignItems: 'center',
+  },
+  confirmText: {
+    color: '#fff',
+    fontWeight: 'bold',
+  },
+  // To-Do Refined Styles
+  todoHeader: {
+    backgroundColor: '#2a837c',
+    paddingTop: 20,
+    paddingBottom: 30,
+    paddingHorizontal: 20,
+  },
+  todoHeaderTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  backButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#ecf0f1',
-    marginTop: 12,
   },
-  viewButtonText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#3498db',
-    marginRight: 4,
+  backText: {
+    color: '#fff',
+    fontSize: 16,
+    marginLeft: 4,
   },
-  smallButton: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 4,
-    backgroundColor: '#f0f8ff',
+  todoHeaderIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  todoCountText: {
+    color: '#fff',
+    marginLeft: 6,
+    fontWeight: '700',
+  },
+  todoHeaderText: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  todoListContainer: {
+    flex: 1,
+    backgroundColor: '#2a837c',
+    paddingHorizontal: 10,
+    marginTop: -10,
+  },
+  taskItemContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    borderRadius: 8,
+    marginBottom: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
   },
   taskItem: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
-  },
-  taskItemCompleted: {
-    opacity: 0.6,
   },
   taskCheckmark: {
-    marginRight: 10,
+    marginRight: 15,
   },
   taskInfo: {
     flex: 1,
   },
   taskTitle: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 16,
     color: '#2c3e50',
+    fontWeight: '500',
   },
   taskTitleCompleted: {
     textDecorationLine: 'line-through',
     color: '#bdc3c7',
   },
-  taskMeta: {
+  taskItemCompleted: {
+    backgroundColor: '#f9fbfb',
+  },
+  taskActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
   },
-  taskMetaText: {
-    fontSize: 9,
-    color: '#7f8c8d',
-    marginLeft: 2,
+  actionButton: {
+    padding: 8,
+    marginLeft: 4,
   },
-  metaIcon: {
-    marginLeft: 6,
-  },
-  statusBadge: {
-    paddingVertical: 3,
-    paddingHorizontal: 8,
-    backgroundColor: '#fff3cd',
-    borderRadius: 3,
-  },
-  statusBadgeCompleted: {
-    backgroundColor: '#d4edda',
-  },
-  statusText: {
-    fontSize: 9,
-    fontWeight: '600',
-    color: '#856404',
-  },
-  progressItem: {
-    marginBottom: 14,
-  },
-  progressHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  progressTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#2c3e50',
-  },
-  progressPercent: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  progressBar: {
-    height: 6,
-    backgroundColor: '#ecf0f1',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 4,
-  },
-  progressFill: {
-    height: '100%',
-  },
-  progressStatus: {
-    fontSize: 10,
-    color: '#7f8c8d',
-  },
-  announcementItem: {
-    flexDirection: 'row',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
-  },
-  announcementIcon: {
-    marginRight: 10,
-    justifyContent: 'center',
-  },
-  announcementContent: {
-    flex: 1,
-  },
-  announcementTitle: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#2c3e50',
-  },
-  announcementMessage: {
-    fontSize: 11,
-    color: '#7f8c8d',
-    marginTop: 2,
-  },
-  announcementDate: {
-    fontSize: 9,
-    color: '#bdc3c7',
-    marginTop: 4,
-  },
-  studentProgressItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
-  },
-  studentAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#3498db',
+  addTaskFloatingBtn: {
+    position: 'absolute',
+    bottom: 30,
+    right: 30,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#f39c12',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 10,
-  },
-  avatarText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  studentProgressInfo: {
-    flex: 1,
-  },
-  studentName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#2c3e50',
-  },
-  studentStatus: {
-    fontSize: 10,
-    color: '#7f8c8d',
-    marginTop: 1,
-  },
-  gradeCard: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    backgroundColor: '#d6eaf8',
-    borderRadius: 4,
-  },
-  gradeText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#3498db',
-  },
-  todoItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#ecf0f1',
-  },
-  todoText: {
-    fontSize: 12,
-    color: '#2c3e50',
-    marginLeft: 10,
-    flex: 1,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center'
   },
-  modalContent: {
-    backgroundColor: '#ffffff',
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingVertical: 20,
-    paddingHorizontal: 16,
+  taskModal: {
+    backgroundColor: '#fff',
+    width: '90%',
+    borderRadius: 16,
+    padding: 24,
+    maxHeight: '80%'
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 20
   },
   modalTitle: {
-    fontSize: 16,
+    fontSize: 18,
     fontWeight: '700',
-    color: '#2c3e50',
+    color: '#2c3e50'
   },
   input: {
     borderWidth: 1,
     borderColor: '#ecf0f1',
     borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    marginBottom: 12,
-    fontSize: 13,
-    color: '#2c3e50',
+    padding: 12,
+    marginBottom: 16,
+    fontSize: 14
   },
-  submitButton: {
-    backgroundColor: '#9b59b6',
+  submitBtn: {
+    backgroundColor: '#2a837c',
+    paddingVertical: 14,
     borderRadius: 8,
-    paddingVertical: 12,
     alignItems: 'center',
-    marginTop: 12,
+    marginTop: 10
   },
-  submitButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#ffffff',
+  submitBtnText: {
+    color: '#fff',
+    fontWeight: 'bold'
   },
 });
 

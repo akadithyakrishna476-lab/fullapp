@@ -83,6 +83,7 @@ const CRDashboard = () => {
         const email = userData.email?.toLowerCase().trim();
 
         let liveCurrentYear = parseInt(userData.currentYear || userData.year_level || 1, 10);
+        let liveJoiningYear = parseInt(userData.joiningYear, 10);
 
         // EXTRA SECURITY: Cross-reference with the actual student record (Single Source of Truth)
         if (email) {
@@ -94,6 +95,7 @@ const CRDashboard = () => {
             if (!studentSnap.empty) {
               const studentData = studentSnap.docs[0].data();
               const studentYear = parseInt(studentData.currentYear || studentData.year_level || 0, 10);
+              const studentJoiningYear = parseInt(studentData.joiningYear, 10);
               const pathYear = studentSnap.docs[0].ref.path.match(/year(\d)/)?.[1];
 
               const confirmedYear = studentYear || (pathYear ? parseInt(pathYear, 10) : liveCurrentYear);
@@ -101,6 +103,10 @@ const CRDashboard = () => {
               if (confirmedYear && confirmedYear !== liveCurrentYear) {
                 console.log(`📡 Academic Year Sync: Student record shows Year ${confirmedYear}, updating profile...`);
                 liveCurrentYear = confirmedYear;
+              }
+
+              if (studentJoiningYear && !isNaN(studentJoiningYear)) {
+                liveJoiningYear = studentJoiningYear;
               }
             }
           } catch (e) {
@@ -112,6 +118,7 @@ const CRDashboard = () => {
           name: userData.name,
           email: email,
           currentYear: liveCurrentYear,
+          joiningYear: liveJoiningYear || 2023, // Fallback if still missing, or take from user input
           departmentId: userData.departmentId || userData.departmentCode,
           departmentName: userData.departmentName,
           studentId: userData.studentId || userData.linkedStudentId,
@@ -228,11 +235,11 @@ const CRDashboard = () => {
     },
     {
       id: '6',
-      title: 'Chat with Faculty',
-      icon: 'chatbubbles',
+      title: 'Staff Advisor Portal',
+      icon: 'shield',
       color: '#9b59b6',
-      description: 'Contact advisors',
-      screen: '/chat-with-rep',
+      description: 'Communication & Tasks',
+      screen: '/staff-advisor',
     },
     {
       id: '7',
@@ -292,7 +299,7 @@ const CRDashboard = () => {
               <View style={styles.profileDetailRow}>
                 <Ionicons name="school-outline" size={16} color="#7f8c8d" />
                 <Text style={styles.profileDetailText}>
-                  Year: {crData.currentYear ? getYearDisplayLabel(crData.currentYear) : 'N/A'}
+                  Year: {crData.joiningYear ? `${crData.joiningYear} Batch` : (crData.currentYear ? getYearDisplayLabel(crData.currentYear) : 'N/A')}
                 </Text>
               </View>
               <View style={styles.profileDetailRow}>

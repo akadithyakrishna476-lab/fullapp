@@ -6,8 +6,10 @@ import {
     getDoc,
     getDocs,
     onSnapshot,
+    query,
     serverTimestamp,
-    setDoc
+    setDoc,
+    where
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -26,7 +28,6 @@ import { auth, db } from '../firebase/firebaseConfig';
 const ARRIVAL_STATUSES = [
     { label: 'ARRIVED', value: 'ARRIVED', color: '#2ecc71' },
     { label: 'NOT ARRIVED', value: 'NOT_ARRIVED', color: '#e74c3c' },
-    { label: 'LATE', value: 'LATE', color: '#f1c40f' },
 ];
 
 const CLASS_STATUSES = [
@@ -270,36 +271,44 @@ const ClassStatusScreen = () => {
     const markStatus = async (slot, arrivalStatus) => {
         if (userRole !== 'REP') return;
 
-        // Validation: FREE only if NOT_ARRIVED
-        // Validation: FREE only if NOT_ARRIVED
-        let currentClassStatus = 'BUSY';
-        if (arrivalStatus === 'NOT_ARRIVED') {
-            currentClassStatus = 'FREE';
-        } else if (arrivalStatus === 'LATE') {
-            currentClassStatus = 'LATE'; // New Requirement: LATE maps to LATE
-        }
-        // ARRIVED remains BUSY
-
         try {
             const now = new Date();
             const dayName = DAYS[now.getDay()];
-
-            // Path: timetable/{dept}/{year}/{day}/slots/{slotId}
-            // DIRECT WRITE to source of truth
             const docRef = doc(db, 'timetable', userDept, selectedYear, dayName, 'slots', slot.id);
 
-            await setDoc(docRef, {
-                // Preserved Fields
-                // Updated Fields
-                facultyArrivalStatus: arrivalStatus, // 'ARRIVED', 'NOT_ARRIVED', 'LATE'
-                classStatus: currentClassStatus,     // 'BUSY', 'FREE'
+            // Toggle logic: If clicking the same status, clear it
+            if (slot.facultyArrivalStatus === arrivalStatus) {
+                await setDoc(docRef, {
+                    facultyArrivalStatus: null,
+                    classStatus: null,
+                    statusDate: null,
+                    statusMarkedBy: null,
+                    statusMarkedAt: null,
+                    lastUpdated: serverTimestamp()
+                }, { merge: true });
 
-                // Metadata
-                lastUpdated: serverTimestamp(),
+                Alert.alert('Success', 'Status cleared');
+                return;
+            }
+
+            // Normal marking
+            let currentClassStatus = 'BUSY';
+            if (arrivalStatus === 'NOT_ARRIVED') {
+                currentClassStatus = 'FREE';
+            } else if (arrivalStatus === 'LATE') {
+                currentClassStatus = 'LATE';
+            }
+
+            const slotData = {
+                facultyArrivalStatus: arrivalStatus,
+                classStatus: currentClassStatus,
+                statusDate: todayDate,
                 statusMarkedBy: auth.currentUser.uid,
                 statusMarkedAt: new Date().toISOString(),
-                statusDate: todayDate // To verify freshness if needed
-            }, { merge: true }); // CRITICAL: MERGE TRUE prevents deleting subject/faculty info
+                lastUpdated: serverTimestamp()
+            };
+
+            await setDoc(docRef, slotData, { merge: true });
 
             Alert.alert('Success', 'Status marked successfully');
         } catch (error) {
@@ -331,9 +340,9 @@ const ClassStatusScreen = () => {
         if (userRole === 'FACULTY') {
             if (isMarked) {
                 // MARKED: Show Single Badge
-                let badgeColor = '#3498db'; // BUSY default
-                if (status.classStatus === 'FREE') badgeColor = '#9b59b6';
-                if (status.classStatus === 'LATE') badgeColor = '#f1c40f';
+                let badgeColor = '#10B981'; // BUSY default (consistent with Timetable)
+                if (status.classStatus === 'FREE') badgeColor = '#EF4444';
+                if (status.classStatus === 'LATE') badgeColor = '#F1C40F';
 
                 return (
                     <View style={styles.card}>
@@ -408,12 +417,11 @@ const ClassStatusScreen = () => {
                             return (
                                 <TouchableOpacity
                                     key={s.value}
-                                    disabled={isMarked || userRole !== 'REP'}
+                                    disabled={userRole !== 'REP'}
                                     style={[
                                         styles.statusButton,
                                         { borderColor: s.color },
-                                        isActive && { backgroundColor: s.color },
-                                        (isMarked && !isActive) && styles.disabledButton
+                                        isActive && { backgroundColor: s.color }
                                     ]}
                                     onPress={() => markStatus(item, s.value)}
                                 >
@@ -431,7 +439,7 @@ const ClassStatusScreen = () => {
                             <View
                                 style={[
                                     styles.classStatusBadge,
-                                    { backgroundColor: status.classStatus === 'FREE' ? '#9b59b6' : (status.classStatus === 'LATE' ? '#f1c40f' : '#3498db') }
+                                    { backgroundColor: status.classStatus === 'FREE' ? '#EF4444' : (status.classStatus === 'LATE' ? '#F1C40F' : '#10B981') }
                                 ]}
                             >
                                 <Text style={styles.classStatusText}>{status.classStatus}</Text>
