@@ -55,46 +55,46 @@ const getResponsiveFontSize = (size) => {
 
 // --- Year 1 Slots (Starts at 8:30) ---
 const YEAR1_WEEKDAY_SLOTS = [
-  { id: '08_30_09_30', label: '8:30–9:30', startTime: '8:30', endTime: '9:30' },
-  { id: '09_30_10_30', label: '9:30–10:30', startTime: '9:30', endTime: '10:30' },
-  { id: '10_30_11_30', label: '10:30–11:30', startTime: '10:30', endTime: '11:30' },
-  { id: '11_30_12_30', label: '11:30–12:30', startTime: '11:30', endTime: '12:30' }, // Lunch Y1
-  { id: '12_30_01_30', label: '12:30–1:30', startTime: '12:30', endTime: '1:30' },
-  { id: '01_30_02_30', label: '1:30–2:30', startTime: '1:30', endTime: '2:30' },
-  { id: '02_30_03_30', label: '2:30–3:30', startTime: '2:30', endTime: '3:30' },
-  { id: '03_30_04_30', label: '3:30–4:30', startTime: '3:30', endTime: '4:30' }
+  { id: '08_30_09_30', label: '8:30�9:30', startTime: '8:30', endTime: '9:30' },
+  { id: '09_30_10_30', label: '9:30�10:30', startTime: '9:30', endTime: '10:30' },
+  { id: '10_30_11_30', label: '10:30�11:30', startTime: '10:30', endTime: '11:30' },
+  { id: '11_30_12_30', label: '11:30�12:30', startTime: '11:30', endTime: '12:30' }, // Lunch Y1
+  { id: '12_30_01_30', label: '12:30�1:30', startTime: '12:30', endTime: '1:30' },
+  { id: '01_30_02_30', label: '1:30�2:30', startTime: '1:30', endTime: '2:30' },
+  { id: '02_30_03_30', label: '2:30�3:30', startTime: '2:30', endTime: '3:30' },
+  { id: '03_30_04_30', label: '3:30�4:30', startTime: '3:30', endTime: '4:30' }
 ];
 
 const YEAR1_FRIDAY_SLOTS = [
-  { id: '08_30_09_30', label: '8:30–9:30', startTime: '8:30', endTime: '9:30' },
-  { id: '09_30_10_25', label: '9:30–10:25', startTime: '9:30', endTime: '10:25' },
-  { id: '10_25_11_20', label: '10:25–11:20', startTime: '10:25', endTime: '11:20' },
-  { id: '11_20_12_15', label: '11:20–12:15', startTime: '11:20', endTime: '12:15' },
-  { id: '12_15_02_00', label: '12:15–2:00', startTime: '12:15', endTime: '2:00' }, // Lunch
-  { id: '02_00_02_50', label: '2:00–2:50', startTime: '2:00', endTime: '2:50' },
-  { id: '02_50_03_40', label: '2:50–3:40', startTime: '2:50', endTime: '3:40' },
-  { id: '03_40_04_30', label: '3:40–4:30', startTime: '3:40', endTime: '4:30' }
+  { id: '08_30_09_30', label: '8:30�9:30', startTime: '8:30', endTime: '9:30' },
+  { id: '09_30_10_25', label: '9:30�10:25', startTime: '9:30', endTime: '10:25' },
+  { id: '10_25_11_20', label: '10:25�11:20', startTime: '10:25', endTime: '11:20' },
+  { id: '11_20_12_15', label: '11:20�12:15', startTime: '11:20', endTime: '12:15' },
+  { id: '12_15_02_00', label: '12:15�2:00', startTime: '12:15', endTime: '2:00' }, // Lunch
+  { id: '02_00_02_50', label: '2:00�2:50', startTime: '2:00', endTime: '2:50' },
+  { id: '02_50_03_40', label: '2:50�3:40', startTime: '2:50', endTime: '3:40' },
+  { id: '03_40_04_30', label: '3:40�4:30', startTime: '3:40', endTime: '4:30' }
 ];
 
 // --- Year 2, 3, 4 Slots (Starts at 9:30) ---
 const YEAR24_WEEKDAY_SLOTS = [
-  { id: '09_30_10_30', label: '9:30–10:30', startTime: '9:30', endTime: '10:30' },
-  { id: '10_30_11_30', label: '10:30–11:30', startTime: '10:30', endTime: '11:30' },
-  { id: '11_30_12_30', label: '11:30–12:30', startTime: '11:30', endTime: '12:30' },
-  { id: '12_30_01_30', label: '12:30–1:30', startTime: '12:30', endTime: '1:30' }, // Lunch Y2-4
-  { id: '01_30_02_30', label: '1:30–2:30', startTime: '1:30', endTime: '2:30' },
-  { id: '02_30_03_30', label: '2:30–3:30', startTime: '2:30', endTime: '3:30' },
-  { id: '03_30_04_30', label: '3:30–4:30', startTime: '3:30', endTime: '4:30' }
+  { id: '09_30_10_30', label: '9:30�10:30', startTime: '9:30', endTime: '10:30' },
+  { id: '10_30_11_30', label: '10:30�11:30', startTime: '10:30', endTime: '11:30' },
+  { id: '11_30_12_30', label: '11:30�12:30', startTime: '11:30', endTime: '12:30' },
+  { id: '12_30_01_30', label: '12:30�1:30', startTime: '12:30', endTime: '1:30' }, // Lunch Y2-4
+  { id: '01_30_02_30', label: '1:30�2:30', startTime: '1:30', endTime: '2:30' },
+  { id: '02_30_03_30', label: '2:30�3:30', startTime: '2:30', endTime: '3:30' },
+  { id: '03_30_04_30', label: '3:30�4:30', startTime: '3:30', endTime: '4:30' }
 ];
 
 const YEAR24_FRIDAY_SLOTS = [
-  { id: '09_30_10_25', label: '9:30–10:25', startTime: '9:30', endTime: '10:25' },
-  { id: '10_25_11_20', label: '10:25–11:20', startTime: '10:25', endTime: '11:20' },
-  { id: '11_20_12_15', label: '11:20–12:15', startTime: '11:20', endTime: '12:15' },
-  { id: '12_15_02_00', label: '12:15–2:00', startTime: '12:15', endTime: '2:00' }, // Lunch
-  { id: '02_00_02_50', label: '2:00–2:50', startTime: '2:00', endTime: '2:50' },
-  { id: '02_50_03_40', label: '2:50–3:40', startTime: '2:50', endTime: '3:40' },
-  { id: '03_40_04_30', label: '3:40–4:30', startTime: '3:40', endTime: '4:30' }
+  { id: '09_30_10_25', label: '9:30�10:25', startTime: '9:30', endTime: '10:25' },
+  { id: '10_25_11_20', label: '10:25�11:20', startTime: '10:25', endTime: '11:20' },
+  { id: '11_20_12_15', label: '11:20�12:15', startTime: '11:20', endTime: '12:15' },
+  { id: '12_15_02_00', label: '12:15�2:00', startTime: '12:15', endTime: '2:00' }, // Lunch
+  { id: '02_00_02_50', label: '2:00�2:50', startTime: '2:00', endTime: '2:50' },
+  { id: '02_50_03_40', label: '2:50�3:40', startTime: '2:50', endTime: '3:40' },
+  { id: '03_40_04_30', label: '3:40�4:30', startTime: '3:40', endTime: '4:30' }
 ];
 
 const getTimeSlotsForDay = (day, year) => {
@@ -255,7 +255,10 @@ const TimetableScreen = () => {
       const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
       if (userDoc.exists()) {
         const userData = userDoc.data();
-        let role = userData.role === 'class_representative' ? 'cr' : 'faculty';
+
+        // Support both 'class_representative' (legacy/standard) and 'cr' (shorthand)
+        const isRep = userData.role === 'class_representative' || userData.role === 'cr';
+        let role = isRep ? 'cr' : 'faculty';
         let year = normalizeYearName(userData.year);
         let name = safe(userData.name, '');
         let collegeId = safe(userData.collegeId, null);
@@ -271,6 +274,59 @@ const TimetableScreen = () => {
             deptIdFromDb = fData.departmentCode || fData.departmentId || deptIdFromDb;
             name = safe(fData.name, name);
             collegeId = safe(fData.collegeId, collegeId);
+          }
+        } else if (role === 'cr') {
+          // For CRs, fetch from the classrepresentative collection for accurate assignment data
+          const years = ['year_1', 'year_2', 'year_3', 'year_4'];
+          let foundAssignment = false;
+
+
+          // Potential Department Codes to check
+          const deptCodes = new Set();
+          if (userData.departmentId) deptCodes.add(userData.departmentId);
+          if (userData.departmentCode) deptCodes.add(userData.departmentCode);
+          // Add common codes as fallback
+          ['IT', 'CSE', 'ECE', 'EEE', 'MECH', 'CIVIL', 'AI', 'DS', 'AIML'].forEach(d => deptCodes.add(d));
+
+
+
+          for (const yearPath of years) {
+            for (const code of deptCodes) {
+              try {
+                // path: classrepresentative/{year}/department_{code}
+                const subColName = `department_${code}`;
+                const q = query(
+                  collection(db, 'classrepresentative', yearPath, subColName),
+                  where('email', '==', currentUser.email)
+                );
+                const querySnapshot = await getDocs(q);
+
+                if (!querySnapshot.empty) {
+                  const crData = querySnapshot.docs[0].data();
+
+                  // Found the CR assignment!
+                  const yearNum = parseInt(yearPath.replace('year_', ''), 10);
+                  yearFromDb = `Year ${yearNum}`;
+
+                  deptFromDb = crData.departmentName || code;
+                  deptIdFromDb = code;
+
+                  name = safe(crData.name || crData.studentName, name);
+                  collegeId = safe(crData.collegeId, collegeId);
+
+                  console.log(`[Timetable] ? Found CR assignment in ${yearPath}/${subColName}`);
+                  foundAssignment = true;
+                  break;
+                }
+              } catch (err) {
+                // Ignore errors for non-existent collections
+              }
+            }
+            if (foundAssignment) break;
+          }
+
+          if (!foundAssignment) {
+            console.warn('[Timetable] No CR assignment found in classrepresentative collection, using users data');
           }
         }
 
@@ -439,20 +495,33 @@ const TimetableScreen = () => {
         // --- REPRESENTATIVE VIEW: DUAL STREAM ---
         const streams = { global: {}, private: {} };
 
+        console.log(`[Timetable] ?? CR TIMETABLE QUERY SETUP`);
+        console.log(`[Timetable] Department: "${department}"`);
+        console.log(`[Timetable] Years: ${JSON.stringify(years)}`);
+        console.log(`[Timetable] Role: ${role}, UID: ${uid}`);
+        console.log(`[Timetable] College ID: ${collegeId}`);
+        console.log(`[Timetable] ========================================`);
+
         const updateRepState = () => {
           // Merge: Global (Faculty) always overrides Private (Rep)
           const merged = { ...streams.private, ...streams.global };
+          console.log(`[Timetable] ?? CR State Updated - Total Slots: ${Object.keys(merged).length}`);
+          console.log(`[Timetable] Global Slots: ${Object.keys(streams.global).length}, Private Slots: ${Object.keys(streams.private).length}`);
           setTimetable(merged);
         };
 
         // STREAM 1: Global Faculty Data (Listen to dept/year/day)
         years.forEach(year => {
           DAYS.forEach(day => {
+            const queryPath = `timetable/${department}/${year}/${day}/slots`;
+            console.log(`[Timetable] ?? Setting up listener for: ${queryPath}`);
             const slotsColRef = collection(db, 'timetable', department, year, day, 'slots');
             const unsubGlobal = onSnapshot(slotsColRef, (snapshot) => {
+              console.log(`[Timetable] ?? Snapshot received for ${queryPath} - Found ${snapshot.docs.length} slots`);
               snapshot.docs.forEach(doc => {
                 const slotId = doc.id;
                 const data = doc.data();
+                console.log(`[Timetable] ? Slot: ${day}-${slotId} | Subject: "${data.subjectName}" | Faculty: "${data.facultyName}"`);
                 streams.global[`${day}-${slotId}`] = {
                   ...data,
                   day,
@@ -484,7 +553,7 @@ const TimetableScreen = () => {
         listenersRef.current.push(unsubPrivate);
       }
     } catch (error) {
-      console.error('❌ Error setting up timetable listeners:', error);
+      console.error('? Error setting up timetable listeners:', error);
     }
   };
 
@@ -657,7 +726,15 @@ const TimetableScreen = () => {
         secondaryEntries: secondaryEntries,
         createdByRole: userRole === 'cr' ? 'rep' : 'faculty',
         department: targetDept,
-        collegeId: userCollegeId
+        collegeId: userCollegeId,
+
+        // --- PRESERVE STATUS FIELDS ---
+        // If a Rep has already marked this slot, we must NOT wipe it out when Faculty edits the name.
+        facultyArrivalStatus: existingData?.facultyArrivalStatus || null,
+        classStatus: existingData?.classStatus || null,
+        statusMarkedBy: existingData?.statusMarkedBy || null,
+        statusMarkedAt: existingData?.statusMarkedAt || null,
+        statusDate: existingData?.statusDate || null
       };
 
       if (userRole === 'cr') {
@@ -676,7 +753,7 @@ const TimetableScreen = () => {
       // Sync local state temporarily if needed, though onSnapshot will catch it
       scheduleNotifications({ ...timetable, [selectedSlot.key]: slotData });
     } catch (error) {
-      console.error('❌ Error saving slot:', error);
+      console.error('? Error saving slot:', error);
       Alert.alert('Error', 'Failed to save timetable slot.');
       setLoading(false);
     }
@@ -725,7 +802,7 @@ const TimetableScreen = () => {
               setLoading(false);
               Alert.alert('Success', 'Entry removed.');
             } catch (error) {
-              console.error('❌ Error deleting slot:', error);
+              console.error('? Error deleting slot:', error);
               Alert.alert('Error', 'Failed to delete slot.');
               setLoading(false);
             }
@@ -761,7 +838,7 @@ const TimetableScreen = () => {
       setLoading(false);
       Alert.alert('Success', `Class status updated to: ${status}`);
     } catch (error) {
-      console.error('❌ Error saving status:', error);
+      console.error('? Error saving status:', error);
       Alert.alert('Error', 'Failed to update class status.');
       setLoading(false);
     }
@@ -910,7 +987,7 @@ const TimetableScreen = () => {
             <View>
               {/* MON-THU Section Header */}
               <View style={[styles.sectionHeader, { height: 38 }]}>
-                <Text style={styles.sectionHeaderText}>MONDAY – THURSDAY</Text>
+                <Text style={styles.sectionHeaderText}>MONDAY � THURSDAY</Text>
               </View>
               <View style={[styles.timeRowHeader, { height: 44 }]}>
                 {weekdaySlots.map(slot => (
@@ -948,7 +1025,11 @@ const TimetableScreen = () => {
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Timetable</Text>
         <View style={styles.headerRight}>
-          <Text style={styles.deptBadge}>{userRole === 'faculty' ? 'Faculty' : 'Year Rep'}</Text>
+          <Text style={styles.deptBadge}>
+            {userRole === 'faculty'
+              ? 'Faculty'
+              : `${userDepartment || 'DEPT'} - ${userClass || 'YEAR'}`}
+          </Text>
         </View>
       </View>
 

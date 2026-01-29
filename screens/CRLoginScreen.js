@@ -78,18 +78,56 @@ const CRLoginScreen = () => {
           finalResult: isCRFlag || isCRRole
         });
 
-        if (isCRFlag || isCRRole) {
+        // Check actual ClassRepresentative collection to get the TRUE year/dept
+        // (userData in 'users' collection might be stale or default 'year_1')
+        const years = ['year_1', 'year_2', 'year_3', 'year_4'];
+        let foundCR = null;
+        let foundYear = userData.year || 'year_1';
+        let foundDept = userData.crDepartment || userData.departmentName || '';
+        let foundDeptId = userData.departmentCode || userData.departmentId || '';
+
+        // Potential Dept Codes
+        const deptCodes = new Set();
+        if (foundDeptId) deptCodes.add(foundDeptId);
+        ['IT', 'CSE', 'ECE', 'EEE', 'MECH', 'CIVIL', 'AI', 'DS', 'AIML'].forEach(d => deptCodes.add(d));
+
+        console.log('🔍 Deep scanning classrepresentative collection for accurate assignment...');
+
+        outerLoop:
+        for (const yearPath of years) {
+          for (const code of deptCodes) {
+            try {
+              const q = query(
+                collection(db, 'classrepresentative', yearPath, `department_${code}`),
+                where('email', '==', normalizedEmail)
+              );
+              const snap = await getDocs(q);
+              if (!snap.empty) {
+                foundCR = snap.docs[0].data();
+                foundYear = yearPath; // e.g. 'year_2'
+                foundDept = foundCR.departmentName || code;
+                foundDeptId = code;
+                console.log(`✅ Found TRUE assignment in ${yearPath} / ${code}`);
+                break outerLoop;
+              }
+            } catch (e) {
+              // ignore
+            }
+          }
+        }
+
+        if (isCRFlag || isCRRole || foundCR) {
           const crData = {
             id: userUid,
-            name: userData.name || userEmail || '',
-            email: normalizedEmail || '',
-            year: userData.year || 'year_1',
-            currentYear: parseInt(userData.currentYear || userData.year_level || 1, 10),
-            departmentName: userData.crDepartment || userData.departmentName || '',
-            departmentId: userData.departmentCode || userData.departmentId || '',
+            name: foundCR?.name || foundCR?.studentName || userData.name || userEmail || '',
+            email: normalizedEmail,
+            year: foundYear, // Correct Year from DB
+            currentYear: parseInt((foundYear || '').replace('year_', '') || 1, 10),
+            departmentName: foundDept,
+            departmentId: foundDeptId,
             isCR: true,
-            role: 'cr',
-            studentId: userData.studentId || userData.rollNo || userData.rollNumber || ''
+            role: 'class_representative', // Normalize to standard
+            studentId: foundCR?.studentId || userData.studentId || ''
           };
 
           console.log('✅ CR VALIDATION SUCCESS:', {
@@ -103,9 +141,15 @@ const CRLoginScreen = () => {
             crData,
             message: 'Valid CR access'
           };
+        } else {
+          // Not found in CR paths and no flag in User doc
+          // Fallback: If they have the flag but we couldn't find the subcollection, we trust the flag + userDoc data (legacy behavior)
+          if (isCRFlag || isCRRole) {
+            // Already handled above, but just in case logic slips
+          }
         }
 
-        // Not a CR under simple rules
+        // Not a CR
         return {
           isValid: false,
           crData: null,
@@ -209,12 +253,15 @@ const CRLoginScreen = () => {
       );
 
     } catch (error) {
-      console.error('Login error:', error);
+      // Only log unexpected errors
+      if (error.code !== 'auth/invalid-credential' && error.code !== 'auth/wrong-password' && error.code !== 'auth/user-not-found') {
+        console.log('Login error details:', error.code, error.message);
+      }
 
       let errorMessage = 'Login failed. Please try again.';
 
       if (error.code === 'auth/invalid-credential' || error.code === 'auth/wrong-password') {
-        errorMessage = 'Invalid email or password.\n\nIf your password was recently changed, use the new credentials provided by your faculty.';
+        errorMessage = 'Invalid email or password.\n\nPlease check your credentials and try again.';
       } else if (error.code === 'auth/user-not-found') {
         errorMessage = 'No account found with this email.\n\nPlease contact your faculty advisor.';
       } else if (error.code === 'auth/too-many-requests') {

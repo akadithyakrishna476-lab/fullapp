@@ -4,11 +4,10 @@ import {
     collection,
     doc,
     getDoc,
+    getDocs,
     onSnapshot,
-    query,
     serverTimestamp,
-    setDoc,
-    where
+    setDoc
 } from 'firebase/firestore';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -84,7 +83,7 @@ const ClassStatusScreen = () => {
     const [userYear, setUserYear] = useState(null);
     const [selectedYear, setSelectedYear] = useState('Year 1');
     const [timetableSlots, setTimetableSlots] = useState([]);
-    const [statusEntries, setStatusEntries] = useState({});
+    // Removed statusEntries state as it's no longer separate
     const [todayDate, setTodayDate] = useState('');
 
     useEffect(() => {
@@ -112,22 +111,66 @@ const ClassStatusScreen = () => {
             }
 
             const userData = userDoc.data();
-            const role = userData.role === 'class_representative' ? 'REP' : 'FACULTY';
+            const isRep = userData.role === 'class_representative' || userData.role === 'cr';
+            const role = isRep ? 'REP' : 'FACULTY';
             setUserRole(role);
 
             if (role === 'REP') {
-                const emailDocId = String(user.email || '').toLowerCase().replace(/[@.]/g, '_');
-                const repRef = doc(db, 'classRepresentatives', emailDocId);
-                const repSnap = await getDoc(repRef);
+                // Correctly search for Rep assignment in classrepresentative/{year}/{department}
+                // NEW LOGIC: Cannot list subcollections. Must guess Department ID.
+                const years = ['year_1', 'year_2', 'year_3', 'year_4'];
 
-                if (repSnap.exists()) {
-                    const repData = repSnap.data();
-                    const dept = getDepartmentCode(repData.departmentName || repData.departmentId, repData.departmentId);
-                    const normYear = normalizeYearName(repData.year || userData.year);
+                // Potential Department Codes to check
+                const deptCodes = new Set();
+                if (userData.departmentId) deptCodes.add(userData.departmentId);
+                // Extract from user email if needed, or defaults
+                ['IT', 'CSE', 'ECE', 'EEE', 'MECH', 'CIVIL', 'AI', 'DS', 'AIML'].forEach(d => deptCodes.add(d));
+
+                let foundAssignment = false;
+                let deptName = null;
+                let deptId = null;
+                let finalYear = null;
+
+                for (const yearPath of years) {
+                    for (const code of deptCodes) {
+                        try {
+                            // path: classrepresentative/{year}/department_{code}
+                            const subColName = `department_${code}`;
+                            // We use a query to check for the user in this specific department subcol
+                            const q = query(
+                                collection(db, 'classrepresentative', yearPath, subColName),
+                                where('email', '==', user.email)
+                            );
+                            const snap = await getDocs(q);
+
+                            if (!snap.empty) {
+                                const crData = snap.docs[0].data();
+                                // Found Assignment!
+                                const yearNum = parseInt(yearPath.replace('year_', ''), 10);
+                                finalYear = `Year ${yearNum}`;
+
+                                deptName = crData.departmentName || code;
+                                deptId = code;
+                                foundAssignment = true;
+                                break;
+                            }
+                        } catch (err) {
+                            // console.warn('Error checking:', yearPath, code);
+                        }
+                    }
+                    if (foundAssignment) break;
+                }
+
+                if (foundAssignment) {
+                    const dept = getDepartmentCode(deptName, deptId);
+                    const normYear = normalizeYearName(finalYear);
+                    console.log(`[ClassStatus] Found Rep Assignment: Dept=${dept}, Year=${normYear}`);
                     setUserDept(dept);
                     setUserYear(normYear);
                     setSelectedYear(normYear);
                 } else {
+                    // Fallback to User Data if not found in CR tree (Legacy/Error case)
+                    console.warn('[ClassStatus] Rep assignment not found in structure, using user profile.');
                     const dept = getDepartmentCode(userData.departmentName || userData.department, userData.departmentId);
                     const normYear = normalizeYearName(userData.year);
                     setUserDept(dept);
@@ -193,12 +236,14 @@ const ClassStatusScreen = () => {
             }
 
             let unsubSlots = () => { };
-            let unsubStatus = () => { };
 
             // 1. Listen to recurring slots (Shared)
+            // Path: timetable/{dept}/{year}/{day}/slots
+            // This collection IS the source of truth for both SCHEDULE and STATUS
             const slotsPath = `timetable/${userDept}/${selectedYear}/${dayName}/slots`;
             console.log(`[DEBUG] Listening to slots at: ${slotsPath}`);
             const slotsRef = collection(db, 'timetable', userDept, selectedYear, dayName, 'slots');
+
             unsubSlots = onSnapshot(slotsRef, (snapshot) => {
                 console.log(`[DEBUG] Received ${snapshot.size} slots`);
                 const slots = snapshot.docs.map(d => ({
@@ -207,31 +252,14 @@ const ClassStatusScreen = () => {
                 }));
                 slots.sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''));
                 setTimetableSlots(slots);
-            });
 
-            // 2. Listen to today's statuses (Shared - No facultyId filtering)
-            console.log(`[DEBUG] Querying classStatus for Date: ${todayDate}, Dept: ${userDept}, Year: ${selectedYear}`);
-            const statusQuery = query(
-                collection(db, 'classStatus'),
-                where('date', '==', todayDate),
-                where('department', '==', userDept),
-                where('year', '==', selectedYear)
-            );
-            unsubStatus = onSnapshot(statusQuery, (snapshot) => {
-                console.log(`[DEBUG] Received ${snapshot.size} status entries`);
-                const entries = {};
-                snapshot.docs.forEach(d => {
-                    const data = d.data();
-                    console.log(`[DEBUG] Status found for slotId: ${data.slotId} -> ${data.facultyArrivalStatus}`);
-                    entries[data.slotId] = data;
-                });
-                setStatusEntries(entries);
+                // NO separate status entries state needed anymore
+                // The status is IN the slot document itself now.
             });
 
             setLoading(false);
             return () => {
                 unsubSlots();
-                unsubStatus();
             };
         } catch (error) {
             console.error('Error fetching data:', error);
@@ -243,30 +271,35 @@ const ClassStatusScreen = () => {
         if (userRole !== 'REP') return;
 
         // Validation: FREE only if NOT_ARRIVED
-        const currentClassStatus = arrivalStatus === 'NOT_ARRIVED' ? 'FREE' : 'ONGOING';
+        // Validation: FREE only if NOT_ARRIVED
+        let currentClassStatus = 'BUSY';
+        if (arrivalStatus === 'NOT_ARRIVED') {
+            currentClassStatus = 'FREE';
+        } else if (arrivalStatus === 'LATE') {
+            currentClassStatus = 'LATE'; // New Requirement: LATE maps to LATE
+        }
+        // ARRIVED remains BUSY
 
         try {
-            // Unique ID: date_dept_year_slotId
-            // Path: classStatus/{statusId}
-            const statusId = `${todayDate}_${userDept}_${selectedYear}_${slot.id}`.replace(/\s+/g, '_');
-            console.log(`[DEBUG] Marking status for ID: ${statusId}`);
-            const docRef = doc(db, 'classStatus', statusId);
+            const now = new Date();
+            const dayName = DAYS[now.getDay()];
+
+            // Path: timetable/{dept}/{year}/{day}/slots/{slotId}
+            // DIRECT WRITE to source of truth
+            const docRef = doc(db, 'timetable', userDept, selectedYear, dayName, 'slots', slot.id);
 
             await setDoc(docRef, {
-                date: todayDate,
-                department: userDept,
-                year: selectedYear,
-                slotId: slot.id,
-                facultyId: slot.facultyId || null,
-                subjectName: slot.subjectName || '',
-                timeSlot: slot.timeSlot || slot.label || '',
-                facultyArrivalStatus: arrivalStatus,
-                classStatus: currentClassStatus,
-                markedBy: 'REP',
-                statusMarkedAt: new Date().toISOString(),
+                // Preserved Fields
+                // Updated Fields
+                facultyArrivalStatus: arrivalStatus, // 'ARRIVED', 'NOT_ARRIVED', 'LATE'
+                classStatus: currentClassStatus,     // 'BUSY', 'FREE'
+
+                // Metadata
+                lastUpdated: serverTimestamp(),
                 statusMarkedBy: auth.currentUser.uid,
-                timestamp: serverTimestamp(),
-            });
+                statusMarkedAt: new Date().toISOString(),
+                statusDate: todayDate // To verify freshness if needed
+            }, { merge: true }); // CRITICAL: MERGE TRUE prevents deleting subject/faculty info
 
             Alert.alert('Success', 'Status marked successfully');
         } catch (error) {
@@ -276,9 +309,79 @@ const ClassStatusScreen = () => {
     };
 
     const renderSlotItem = ({ item }) => {
-        const status = statusEntries[item.id];
-        const isMarked = !!status;
+        // Status is now on the item itself
+        let status = item;
 
+        // DAILY RESET CHECK:
+        // If the status was marked on a previous date, ignore it (effectively clear it for UI)
+        if (status.statusDate && status.statusDate !== todayDate) {
+            status = {
+                ...item,
+                facultyArrivalStatus: null,
+                classStatus: null,
+                statusMarkedBy: null,
+                statusMarkedAt: null
+            };
+        }
+
+        const isMarked = !!status.facultyArrivalStatus;
+
+
+        // FACULTY VIEW
+        if (userRole === 'FACULTY') {
+            if (isMarked) {
+                // MARKED: Show Single Badge
+                let badgeColor = '#3498db'; // BUSY default
+                if (status.classStatus === 'FREE') badgeColor = '#9b59b6';
+                if (status.classStatus === 'LATE') badgeColor = '#f1c40f';
+
+                return (
+                    <View style={styles.card}>
+                        <View style={styles.cardHeader}>
+                            <View style={{ flex: 1, marginRight: 10 }}>
+                                <Text style={styles.periodLabel}>{item.timeSlot}</Text>
+                                <Text style={styles.subjectText}>{item.subjectName}</Text>
+                                <Text style={styles.facultyNameText}>
+                                    {item.facultyName || 'Faculty not assigned'}
+                                </Text>
+                            </View>
+                        </View>
+                        <View style={styles.cardBody}>
+                            <Text style={styles.label}>Current Class Status:</Text>
+                            <View style={[styles.bigStatusBadge, { backgroundColor: badgeColor }]}>
+                                <Text style={styles.bigStatusText}>{status.classStatus}</Text>
+                            </View>
+                            <Text style={styles.timestampText}>
+                                Last updated: {new Date(status.statusMarkedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </Text>
+                        </View>
+                    </View>
+                );
+            } else {
+                // UNMARKED: Show Pending State (No Buttons)
+                return (
+                    <View style={styles.card}>
+                        <View style={styles.cardHeader}>
+                            <View style={{ flex: 1, marginRight: 10 }}>
+                                <Text style={styles.periodLabel}>{item.timeSlot}</Text>
+                                <Text style={styles.subjectText}>{item.subjectName}</Text>
+                                <Text style={styles.facultyNameText}>
+                                    {item.facultyName || 'Faculty not assigned'}
+                                </Text>
+                            </View>
+                        </View>
+                        <View style={styles.cardBody}>
+                            <View style={styles.pendingContainer}>
+                                <Ionicons name="time-outline" size={20} color="#95a5a6" />
+                                <Text style={styles.pendingText}>Waiting for Rep update...</Text>
+                            </View>
+                        </View>
+                    </View>
+                );
+            }
+        }
+
+        // REP VIEW (EDITABLE)
         return (
             <View style={styles.card}>
                 <View style={styles.cardHeader}>
@@ -322,13 +425,13 @@ const ClassStatusScreen = () => {
                         })}
                     </View>
 
-                    {isMarked && (
+                    {isMarked && userRole === 'REP' && (
                         <View style={styles.classStatusContainer}>
-                            <Text style={styles.label}>Class Status:</Text>
+                            <Text style={styles.label}>Class Status Result:</Text>
                             <View
                                 style={[
                                     styles.classStatusBadge,
-                                    { backgroundColor: status.classStatus === 'FREE' ? '#9b59b6' : '#3498db' }
+                                    { backgroundColor: status.classStatus === 'FREE' ? '#9b59b6' : (status.classStatus === 'LATE' ? '#f1c40f' : '#3498db') }
                                 ]}
                             >
                                 <Text style={styles.classStatusText}>{status.classStatus}</Text>
@@ -577,6 +680,43 @@ const styles = StyleSheet.create({
         color: '#95a5a6',
         textAlign: 'center',
     },
+    bigStatusBadge: {
+        paddingVertical: 12,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: 5,
+        marginBottom: 10,
+    },
+    bigStatusText: {
+        fontSize: 18,
+        fontWeight: 'bold',
+        color: '#fff',
+        letterSpacing: 1,
+    },
+    timestampText: {
+        fontSize: 11,
+        color: '#95a5a6',
+        textAlign: 'right',
+        fontStyle: 'italic',
+    },
+    pendingContainer: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 15,
+        backgroundColor: '#f8f9fa',
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: '#e1e4e8',
+        borderStyle: 'dashed'
+    },
+    pendingText: {
+        marginLeft: 8,
+        color: '#95a5a6',
+        fontSize: 14,
+        fontStyle: 'italic'
+    }
 });
 
 export default ClassStatusScreen;
