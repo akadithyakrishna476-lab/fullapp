@@ -3,7 +3,6 @@ import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import {
   addDoc,
   collection,
-  collectionGroup,
   deleteDoc,
   doc,
   getDoc,
@@ -191,109 +190,104 @@ const StaffAdvisorScreen = () => {
 
       let foundRepsList = [];
       const usersRef = collection(db, 'users');
+      // "classrepresentative" collection logic (Legacy but kept for robustness)
       const years = ['year_1', 'year_2', 'year_3', 'year_4'];
       const deptId = targetDept === 'INFORMATION TECHNOLOGY' ? 'IT' : targetDept;
 
+      // 1. Check "classrepresentative" collection
       for (const y of years) {
-        const crRef = collection(db, 'classrepresentative', y, `department_${deptId}`);
-        const crSnap = await getDocs(crRef);
+        try {
+          const crRef = collection(db, 'classrepresentative', y, `department_${deptId}`);
+          const crSnap = await getDocs(crRef);
 
-        for (const doc of crSnap.docs) {
-          const crData = doc.data();
-          if (crData.active === false) continue;
+          for (const doc of crSnap.docs) {
+            const crData = doc.data();
+            if (crData.active === false) continue;
 
-          let isMatch = false;
-          let repData = null;
-          const email = crData.email?.toLowerCase().trim();
-
-          if (email) {
-            const emailQ = query(usersRef, where('email', '==', email));
-            const userSnap = await getDocs(emailQ);
-
-            if (!userSnap.empty) {
-              const userData = userSnap.docs[0].data();
-              const rawUserYear = userData.joiningYear;
-              const rawCrYear = crData.joiningYear;
-              const userJoiningYear = parseInt(rawUserYear) || rawUserYear || parseInt(rawCrYear) || rawCrYear;
-
-              if (userJoiningYear == targetYear) {
-                isMatch = true;
-                repData = { id: userSnap.docs[0].id, ...userData };
-
-                // PERSIST LINK: Update User Document
-                const userDocRef = doc(db, 'users', userSnap.docs[0].id);
-                updateDoc(userDocRef, {
-                  linkedStaffAdvisorId: auth.currentUser?.uid,
-                  linkedStaffAdvisorName: userData?.name || 'Staff Advisor',
-                  advisorJoiningYear: targetYear.toString(),
-                  advisorDepartment: targetDept
-                }).catch(e => console.error('Error linking advisor to user doc:', e));
-              }
-            } else {
-              const crJoiningYear = parseInt(crData.joiningYear) || crData.joiningYear || targetYear;
-              if (crJoiningYear == targetYear) {
-                isMatch = true;
-                repData = {
-                  id: doc.id,
-                  ...crData,
-                  joiningYear: targetYear,
-                  department: targetDept
-                };
-              }
+            const repYear = parseInt(crData.joiningYear) || targetYear; // Fallback if missing
+            if (repYear == targetYear) {
+              foundRepsList.push({
+                id: doc.id,
+                repId: crData.studentId || doc.id, // Ensure repId is present
+                repName: crData.name,
+                departmentId: deptId,
+                departmentName: targetDept,
+                joiningYear: targetYear,
+                ...crData
+              });
             }
           }
-
-          if (isMatch && repData) {
-            if (!foundRepsList.some(r => r.email === repData.email)) {
-              foundRepsList.push(repData);
-            }
-          }
+        } catch (e) {
+          // Ignore missing collections
         }
       }
 
-      // --- STAGE 2: Direct Student Profile Check (User Request) ---
-      console.log(`[StaffAdvisor] 🔍 Discovery Stage 2: Checking 'students' collection for Year ${targetYear}`);
+      // 2. Check "users" collection for role="CR"
+      const crUserQuery = query(usersRef, where('role', '==', 'CR'), where('departmentId', '==', deptId)); // departmentId match
+      const crUserSnap = await getDocs(crUserQuery);
 
-      const studentsQuery = query(
-        collectionGroup(db, 'students'),
-        where('isRepresentative', '==', true),
-        where('joiningYear', '==', targetYear)
-      );
-
-      const studentsSnap = await getDocs(studentsQuery);
-      console.log(`[StaffAdvisor] Found ${studentsSnap.size} student reps for year ${targetYear}`);
-
-      studentsSnap.forEach(doc => {
+      crUserSnap.forEach(doc => {
         const data = doc.data();
-        const repDept = (data.departmentName || data.department || data.dept)?.toString().toUpperCase();
-
-        console.log(`[StaffAdvisor] Checking Student Rep: ${data.name}, Dept: ${repDept}`);
-
-        if (repDept && (repDept === targetDept || repDept.includes(targetDept) || targetDept.includes(repDept))) {
-          const repData = { id: doc.id, ...data };
-
-          if (!foundRepsList.some(r => r.email === repData.email)) {
-            console.log(`[StaffAdvisor] ✅ Linked Rep from Students: ${repData.name}`);
-            foundRepsList.push(repData);
-
-            // PERSIST LINK: Update Student Document
-            const studentRef = doc(db, 'students', doc.id);
-            updateDoc(studentRef, {
-              linkedStaffAdvisorId: auth.currentUser?.uid,
-              linkedStaffAdvisorName: userData?.name || 'Staff Advisor',
-              advisorJoiningYear: targetYear.toString(),
-              advisorDepartment: targetDept
-            }).catch(e => console.error('Error linking advisor to student doc:', e));
+        // Check joiningYear
+        const uYear = parseInt(data.joiningYear);
+        if (uYear == targetYear) {
+          // Avoid duplicates
+          if (!foundRepsList.some(r => r.repId === doc.id)) {
+            foundRepsList.push({
+              id: doc.id,
+              repId: doc.id,
+              repName: data.name,
+              departmentId: deptId,
+              departmentName: targetDept,
+              joiningYear: targetYear,
+              ...data
+            });
           }
         }
       });
 
+      console.log(`[StaffAdvisor] Found ${foundRepsList.length} Reps.`);
       setConnectedReps(foundRepsList);
+
+      // 3. UPDATE Staff Advisor Doc with `advisedReps`
+      const currentUser = auth.currentUser;
+      if (currentUser && foundRepsList.length > 0) {
+        // We use 'staffAdvisors' collection as per requirement, or fallback to faculty if that's the primary
+        // Per prompt: "Staff Advisors Collection (staffAdvisors)"
+        const staffAdvisorRef = doc(db, 'staffAdvisors', currentUser.uid);
+        // Check if doc exists, if so update/merge
+        const saSnap = await getDoc(staffAdvisorRef);
+
+        const advisedRepsData = foundRepsList.map(r => ({
+          repId: r.repId || r.id,
+          repName: r.repName || r.name,
+          joiningYear: r.joiningYear,
+          departmentId: r.departmentId
+        }));
+
+        const saData = {
+          advisorId: currentUser.uid,
+          advisorName: userData?.name || 'Staff Advisor',
+          facultyName: userData?.name || 'Staff Advisor',
+          departmentId: deptId,
+          departmentName: targetDept,
+          joiningYear: targetYear.toString(),
+          isStaffAdvisor: true,
+          advisedReps: advisedRepsData,
+          updatedAt: serverTimestamp()
+        };
+
+        if (saSnap.exists()) {
+          await updateDoc(staffAdvisorRef, { advisedReps: advisedRepsData, updatedAt: serverTimestamp() });
+        } else {
+          await setDoc(staffAdvisorRef, saData);
+        }
+        console.log('[StaffAdvisor] Updated advisedReps in Firestore.');
+      }
 
       if (foundRepsList.length > 0) {
         setConnectionStatus('connected');
         const user = auth.currentUser;
-        // Pass department to ensure correct path
         setupRealtimeSubscriptions(user.uid, targetYear, targetDept);
       } else {
         setConnectionStatus('awaiting');
@@ -557,9 +551,11 @@ const StaffAdvisorScreen = () => {
               connectedReps.length > 0 ? (
                 <View>
                   {connectedReps.map((rep, idx) => (
-                    <Text key={idx} style={[styles.value, { textAlign: 'right', marginTop: idx > 0 ? 4 : 0 }]}>
-                      {rep.name} ({rep.joiningYear} Batch)
-                    </Text>
+                    <View key={idx} style={{ alignItems: 'flex-end', marginTop: idx > 0 ? 8 : 0, paddingBottom: 4, borderBottomWidth: idx < connectedReps.length - 1 ? 1 : 0, borderBottomColor: '#eee' }}>
+                      <Text style={styles.value}>{rep.repName || rep.name}</Text>
+                      <Text style={[styles.label, { fontSize: 11 }]}>ID: {rep.repId || rep.id}</Text>
+                      <Text style={[styles.label, { fontSize: 11 }]}>{rep.joiningYear} Batch • {rep.departmentName || rep.departmentId}</Text>
+                    </View>
                   ))}
                 </View>
               ) : (

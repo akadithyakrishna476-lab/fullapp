@@ -5,7 +5,7 @@ import { useNavigation, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { createUserWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { collection, deleteField, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -21,36 +21,15 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import StudentCard from '../components/StudentCard';
 import { auth, db, getSecondaryAuth } from '../firebase/firebaseConfig';
-import { getCurrentAcademicYear, getStudentDistribution, getYearDisplayLabel, loadAcademicYear, promoteAcademicYear } from '../utils/academicYearManager';
+import { getCurrentAcademicYear, getStudentDistribution, loadAcademicYear, promoteAcademicYear } from '../utils/academicYearManager';
 import { generateCRPassword } from '../utils/crManagement';
 
-const computeCurrentYear = (joiningYear) => {
-  const base = getCurrentAcademicYear();
-  return Math.max(1, base - Number(joiningYear) + 1);
-};
-
-const buildYearId = (currentYear) => `year${currentYear}`;
-
-const getYearMeta = (currentYear, globalAcademicYear = 2025) => {
-  const numericYear = Number(currentYear);
-  const correspondingAcademicYear = globalAcademicYear - numericYear + 1;
-  return {
-    currentYear: numericYear,
-    yearId: buildYearId(numericYear),
-    label: `Year ${numericYear}`,
-    academicYear: correspondingAcademicYear, // This is the batch/joining year
-    fullLabel: getYearDisplayLabel(numericYear),
-  };
-};
-
-const buildYearOptions = (globalAcademicYear) => [
-  getYearMeta(1, globalAcademicYear),
-  getYearMeta(2, globalAcademicYear),
-  getYearMeta(3, globalAcademicYear),
-  getYearMeta(4, globalAcademicYear),
-];
-
-const YEAR_OPTIONS = buildYearOptions(2025); // Default fallback to new mapping base
+// Removed computed year helpers
+// const computeCurrentYear...
+// const buildYearId...
+// const getYearMeta...
+// const buildYearOptions...
+// const YEAR_OPTIONS...
 
 const StudentManagementScreen = () => {
   const router = useRouter();
@@ -73,13 +52,7 @@ const StudentManagementScreen = () => {
   const [academicYear, setAcademicYear] = useState(2027);
   const [promoting, setPromoting] = useState(false);
 
-  // Calculate academic year for each year level dynamically
-  // Formula: Year N students belong to batch (currentAcademicYear - N + 1)
-  // Example: If currentAcademicYear = 2025:
-  //   Year 1 → 2025 (current year freshers)
-  //   Year 2 → 2024 (joined last year)
-  //   Year 3 → 2023 (joined 2 years ago)
-  //   Year 4 → 2022 (joined 3 years ago)
+  /* REMOVED: Computed logic
   const getAcademicYearForLevel = useCallback((yearLevel) => {
     return academicYear - yearLevel + 1;
   }, [academicYear]);
@@ -87,6 +60,60 @@ const StudentManagementScreen = () => {
   const yearOptions = useMemo(() => buildYearOptions(academicYear), [academicYear]);
   const selectedYearMeta = useMemo(() => getYearMeta(selectedYear, academicYear), [selectedYear, academicYear]);
   const getYearTitle = useCallback((year) => getYearMeta(year, academicYear).fullLabel, [academicYear]);
+  */
+
+  // NEW: Fetch year data directly from Firestore
+  const [yearTabs, setYearTabs] = useState([]);
+
+  useEffect(() => {
+    const fetchYearData = async () => {
+      try {
+        const ids = ['year1', 'year2', 'year3', 'year4'];
+        const tabs = [];
+
+        for (const id of ids) {
+          const docRef = doc(db, 'students', id);
+          const snap = await getDoc(docRef);
+          if (snap.exists()) {
+            const data = snap.data();
+            // console.log(data.id || id, data.joiningYear); // Verification Log
+            tabs.push({
+              id: id,
+              yearLevel: data.yearLevel || parseInt(id.replace('year', '')),
+              label: data.label || `Year ${id.replace('year', '')}`,
+              joiningYear: data.joiningYear // Single Source of Truth
+            });
+          } else {
+            // Fallback if doc missing (should not happen per prompt, but safe to handle)
+            const level = parseInt(id.replace('year', ''));
+            tabs.push({
+              id: id,
+              yearLevel: level,
+              label: `Year ${level}`,
+              joiningYear: 'N/A'
+            });
+          }
+        }
+
+        // Sort by yearLevel ascending
+        tabs.sort((a, b) => a.yearLevel - b.yearLevel);
+
+        // Final verification log
+        tabs.forEach(t => console.log(t.id, t.joiningYear));
+
+        setYearTabs(tabs);
+      } catch (e) {
+        console.error('Error fetching year tabs:', e);
+      }
+    };
+
+    fetchYearData();
+  }, []);
+
+  const getYearTitle = (level) => {
+    const tab = yearTabs.find(t => t.yearLevel === level);
+    return tab ? `${tab.label} - ${tab.joiningYear}` : `Year ${level}`;
+  };
 
 
   // Faculty department info
@@ -122,13 +149,13 @@ const StudentManagementScreen = () => {
   const getActiveDepartmentCode = () => departmentCode || departmentId;
   const buildDeptPaths = (year = selectedYear) => {
     const dept = getActiveDepartmentCode();
-    const yearId = buildYearId(year);
+    const yearId = `year${year}`; // Direct mapping now
     return {
       students: `students/${yearId}/departments/${dept}/students`,
       reps: `classrepresentative/year_${year}/department_${dept}`,
     };
   };
-  const cacheKeyFor = (year = selectedYear) => `${buildYearId(year)}::${getActiveDepartmentCode() || 'unknown'}`;
+  const cacheKeyFor = (year = selectedYear) => `year${year}::${getActiveDepartmentCode() || 'unknown'}`;
 
   // Load faculty department info on mount
   useEffect(() => {
@@ -347,6 +374,98 @@ const StudentManagementScreen = () => {
     });
     return grid;
   };
+
+  // ONE-TIME BACKFILL: Update existing CR records with joiningYear
+  const backfillRanRef = useRef(false);
+
+  const backfillCRJoiningYear = async (force = false) => {
+    const dept = getActiveDepartmentCode();
+    if (!dept) {
+      console.log('[Backfill] Skipping: No department loaded yet.');
+      return;
+    }
+
+    // Prevent re-running unless forced
+    if (backfillRanRef.current && !force) {
+      console.log('[Backfill] Already ran this session.');
+      return;
+    }
+
+    console.log('[Backfill] Starting CR joiningYear backfill for department:', dept);
+    let updatedCount = 0;
+
+    try {
+      // Directly fetch joiningYear from Firestore for each year level
+      const yearLevels = [1, 2, 3, 4];
+
+      for (const yearLevel of yearLevels) {
+        // Fetch joiningYear directly from students/{yearId} document
+        const yearDocRef = doc(db, 'students', `year${yearLevel}`);
+        const yearSnap = await getDoc(yearDocRef);
+
+        let joiningYear = null;
+        if (yearSnap.exists()) {
+          joiningYear = yearSnap.data().joiningYear;
+          console.log(`[Backfill] Year ${yearLevel} joiningYear from Firestore: ${joiningYear}`);
+        }
+
+        if (!joiningYear) {
+          console.log(`[Backfill] Skipping Year ${yearLevel}: No joiningYear in Firestore.`);
+          continue;
+        }
+
+        // Convert to number for consistent typing
+        const joiningYearNum = typeof joiningYear === 'string' ? parseInt(joiningYear, 10) : joiningYear;
+
+        const crPath = `classrepresentative/year_${yearLevel}/department_${dept}`;
+        console.log(`[Backfill] Checking path: ${crPath}`);
+
+        try {
+          const crRef = collection(db, crPath);
+          const crSnap = await getDocs(crRef);
+          console.log(`[Backfill] Found ${crSnap.docs.length} CR docs in Year ${yearLevel}`);
+
+          for (const crDoc of crSnap.docs) {
+            const data = crDoc.data();
+
+            // Always update to ensure consistency
+            if (!data.joiningYear || data.joiningYear !== joiningYearNum) {
+              await updateDoc(crDoc.ref, { joiningYear: joiningYearNum });
+              console.log(`[Backfill] Updated ${crDoc.id} with joiningYear: ${joiningYearNum}`);
+              updatedCount++;
+            } else {
+              console.log(`[Backfill] ${crDoc.id} already has joiningYear: ${data.joiningYear}`);
+            }
+          }
+        } catch (pathError) {
+          console.log(`[Backfill] Path ${crPath} does not exist or error:`, pathError.message);
+        }
+      }
+
+      backfillRanRef.current = true;
+
+      if (updatedCount > 0) {
+        console.log(`[Backfill] Complete! Updated ${updatedCount} CR record(s).`);
+        Alert.alert('Backfill Complete', `Updated ${updatedCount} CR record(s) with joiningYear.`);
+      } else {
+        console.log('[Backfill] No records needed updating.');
+      }
+    } catch (error) {
+      console.error('[Backfill] Error:', error);
+      Alert.alert('Backfill Error', error.message);
+    }
+  };
+
+  // Trigger backfill once department is loaded
+  useEffect(() => {
+    if (getActiveDepartmentCode() && !backfillRanRef.current) {
+      // Small delay to ensure all data is ready
+      const timer = setTimeout(() => {
+        backfillCRJoiningYear();
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [departmentCode, departmentId]);
 
   // Cache per-year data to avoid repeated DB reads
   const cacheRef = useRef({}); // { yearId: { students, classRepresentatives, ts } }
@@ -626,11 +745,11 @@ const StudentManagementScreen = () => {
     const nameParts = (draft.name || '').split(' ').filter(Boolean);
     const firstName = nameParts[0] || '';
     const lastName = nameParts.slice(1).join(' ');
-    const joiningYear = getCurrentAcademicYear() - selectedYear + 1; // Calculate joining year from current year
-
-    // Calculate academic_year for this year level
-    // This represents the batch year (when students at this level originally joined)
-    const academicYear = getAcademicYearForLevel(selectedYear);
+    // Use fetched year metadata
+    const selectedTab = yearTabs.find(t => t.yearLevel === selectedYear);
+    const joiningYear = selectedTab ? selectedTab.joiningYear : 'N/A';
+    // For academic_year (batch year), we can use joiningYear directly if that's what it represents
+    const academicYear = joiningYear;
 
     await setDoc(ref, {
       studentId: id,
@@ -918,7 +1037,9 @@ const StudentManagementScreen = () => {
       const nowIso = new Date().toISOString();
 
       // Calculate academic_year for this year level (batch year)
-      const academicYear = getAcademicYearForLevel(selectedYear);
+      const selectedTab = yearTabs.find(t => t.yearLevel === selectedYear);
+      const joiningYear = selectedTab ? selectedTab.joiningYear : 'N/A';
+      const academicYear = joiningYear;
 
       sortedRows.forEach((row) => {
         const studentId = row.id || `student_${row.rollNo.toString().toLowerCase().replace(/\s+/g, '_')}`;
@@ -930,7 +1051,6 @@ const StudentManagementScreen = () => {
         const nameParts = row.name.split(' ').filter(Boolean);
         const firstName = nameParts[0] || '';
         const lastName = nameParts.slice(1).join(' ');
-        const joiningYear = getCurrentAcademicYear() - selectedYear + 1; // Calculate joining year from current year
 
         // Save to year-wise students collection (NO Auth UID, NO passwords)
         newBatch.set(yearRef, {
@@ -1252,8 +1372,11 @@ const StudentManagementScreen = () => {
       // Save to Firestore
       const batch = writeBatch(db);
 
-      // Calculate academic_year for this year level (batch year)
-      const academicYear = getAcademicYearForLevel(selectedYear);
+      // Use fetched year metadata
+      const selectedTab = yearTabs.find(t => t.yearLevel === selectedYear);
+      const joiningYear = selectedTab ? selectedTab.joiningYear : 'N/A';
+      // For academic_year (batch year), we can use joiningYear directly if that's what it represents
+      const academicYear = joiningYear;
 
       newStudents.forEach((student) => {
         const rollNo = student.rollNumber || student.rollNo;
@@ -1263,7 +1386,6 @@ const StudentManagementScreen = () => {
         const nameParts = (student.name || '').split(' ').filter(Boolean);
         const firstName = nameParts[0] || '';
         const lastName = nameParts.slice(1).join(' ');
-        const joiningYear = getCurrentAcademicYear() - selectedYear + 1; // Calculate joining year from current year
 
         batch.set(studentRef, {
           studentId,
@@ -1388,243 +1510,7 @@ const StudentManagementScreen = () => {
     }
   };
 
-  const handleAddListFromCSV = async () => {
-    try {
-      // Pick CSV file
-      const result = await DocumentPicker.getDocumentAsync({
-        type: ['text/csv', 'text/comma-separated-values', 'application/csv'],
-        copyToCacheDirectory: true,
-      });
 
-      if (result.canceled) {
-        return;
-      }
-
-      const file = result.assets[0];
-      if (!file || !file.uri) {
-        Alert.alert('Error', 'No file selected');
-        return;
-      }
-
-      setLoading(true);
-
-      // STEP 1: Load existing students from Firestore (source of truth)
-      const dept = getActiveDepartmentCode();
-      if (!collegeId || !dept || !selectedYear) {
-        Alert.alert('Error', 'Missing required data. Please ensure you are properly registered.');
-        setLoading(false);
-        return;
-      }
-
-      const { students: deptStudentsPath } = buildDeptPaths(selectedYear);
-      const studentsRef = collection(db, deptStudentsPath);
-      const existingSnapshot = await getDocs(studentsRef);
-
-      // Build Sets of existing unique values (normalized)
-      const existingRollNos = new Set();
-      const existingEmails = new Set();
-      const existingPhones = new Set();
-
-      existingSnapshot.docs.forEach(doc => {
-        const data = doc.data();
-
-        // Add roll number (always required)
-        const rollNo = String(data.rollNo || data.rollNumber || '').trim();
-        if (rollNo.length > 0) {
-          existingRollNos.add(rollNo);
-        }
-
-        // Add email if exists
-        const email = String(data.email || '').trim().toLowerCase();
-        if (email.length > 0) {
-          existingEmails.add(email);
-        }
-
-        // Add phone if exists
-        const phone = String(data.phone || data.mobile || '').trim();
-        if (phone.length > 0) {
-          existingPhones.add(phone);
-        }
-      });
-
-      console.log('📊 Existing data loaded:', {
-        rollNumbers: existingRollNos.size,
-        emails: existingEmails.size,
-        phones: existingPhones.size
-      });
-
-      // STEP 2: Read and parse CSV file
-      const content = await FileSystem.readAsStringAsync(file.uri);
-
-      const lines = content.trim().split('\n');
-      if (lines.length < 2) {
-        Alert.alert('Invalid CSV', 'CSV must contain headers and at least one data row');
-        setLoading(false);
-        return;
-      }
-
-      // Parse headers
-      const headers = lines[0].split(',').map(h => h.replace(/"/g, '').trim().toLowerCase());
-
-      const rollNoIndex = headers.findIndex(h => h.includes('roll'));
-      const nameIndex = headers.findIndex(h => h.includes('name'));
-      const emailIndex = headers.findIndex(h => h.includes('email'));
-      const phoneIndex = headers.findIndex(h => h.includes('phone') || h.includes('mobile'));
-
-      if (rollNoIndex === -1 || nameIndex === -1) {
-        Alert.alert('Invalid CSV', 'CSV must have "Roll No" and "Name" columns');
-        setLoading(false);
-        return;
-      }
-
-      // Parse CSV rows
-      const newStudents = [];
-      const parseErrors = [];
-
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-
-        const cells = line.split(',').map(c => c.replace(/"/g, '').trim());
-
-        const rollNo = (rollNoIndex >= 0 ? cells[rollNoIndex] : '').trim();
-        const name = (nameIndex >= 0 ? cells[nameIndex] : '').trim();
-        const email = (emailIndex >= 0 ? cells[emailIndex] : '').trim();
-        const phone = (phoneIndex >= 0 ? cells[phoneIndex] : '').trim();
-
-        if (!rollNo || !name) {
-          parseErrors.push(`Row ${i + 1}: Missing Roll No or Name`);
-          continue;
-        }
-
-        newStudents.push({
-          id: `row_${Date.now()}_${i}`,
-          rollNo,
-          name,
-          email,
-          phone,
-          csvRowNumber: i + 1,
-        });
-      }
-
-      if (newStudents.length === 0) {
-        Alert.alert('No Data', 'No valid student records found in CSV');
-        setLoading(false);
-        return;
-      }
-
-      // STEP 3: VALIDATION - Check for duplicates within CSV file itself
-      const csvRollNos = new Map();
-      const csvEmails = new Map();
-      const csvPhones = new Map();
-      const duplicateErrors = [];
-
-      for (const student of newStudents) {
-        const rollNo = String(student.rollNo || '').trim();
-        const email = String(student.email || '').trim().toLowerCase();
-        const phone = String(student.phone || '').trim();
-
-        // Check Roll Number duplicates within CSV (always required)
-        if (rollNo.length > 0) {
-          if (csvRollNos.has(rollNo)) {
-            duplicateErrors.push(`This roll number already exists in the saved list.`);
-          } else {
-            csvRollNos.set(rollNo, student.csvRowNumber);
-          }
-        }
-
-        // Check Email duplicates within CSV (only if provided)
-        if (email.length > 0) {
-          if (csvEmails.has(email)) {
-            duplicateErrors.push(`This email already exists in the saved list.`);
-          } else {
-            csvEmails.set(email, student.csvRowNumber);
-          }
-        }
-
-        // Check Phone duplicates within CSV (only if provided)
-        if (phone.length > 0) {
-          if (csvPhones.has(phone)) {
-            duplicateErrors.push(`This phone number already exists in the saved list.`);
-          } else {
-            csvPhones.set(phone, student.csvRowNumber);
-          }
-        }
-      }
-
-      // Block if duplicates found within CSV
-      if (duplicateErrors.length > 0) {
-        const errorMessage = duplicateErrors.slice(0, 5).join('\n');
-        const moreErrors = duplicateErrors.length > 5 ? `\n\n... and ${duplicateErrors.length - 5} more error(s)` : '';
-        Alert.alert('❌ Duplicate Data in CSV', errorMessage + moreErrors);
-        setLoading(false);
-        return;
-      }
-
-      // STEP 4: VALIDATION - Check against existing Firestore data
-      const conflictErrors = [];
-
-      for (const student of newStudents) {
-        const rollNo = String(student.rollNo || '').trim();
-        const email = String(student.email || '').trim().toLowerCase();
-        const phone = String(student.phone || '').trim();
-
-        // Check Roll Number (required field)
-        if (rollNo.length > 0 && existingRollNos.has(rollNo)) {
-          conflictErrors.push(`This roll number already exists in the saved list.`);
-        }
-
-        // Check Email (only if provided)
-        if (email.length > 0 && existingEmails.has(email)) {
-          conflictErrors.push(`This email already exists in the saved list.`);
-        }
-
-        // Check Phone (only if provided)
-        if (phone.length > 0 && existingPhones.has(phone)) {
-          conflictErrors.push(`This phone number already exists in the saved list.`);
-        }
-      }
-
-      // Block if conflicts found with existing data
-      if (conflictErrors.length > 0) {
-        const errorMessage = conflictErrors.slice(0, 5).join('\n');
-        const moreErrors = conflictErrors.length > 5 ? `\n\n... and ${conflictErrors.length - 5} more error(s)` : '';
-        Alert.alert('❌ Duplicate Data Found', errorMessage + moreErrors);
-        setLoading(false);
-        return;
-      }
-
-      // STEP 5: All validation passed - proceed with adding students to UI
-      const existingData = spreadsheetGridData.filter(row => (row.rollNo && row.rollNo.trim()) || (row.name && row.name.trim()));
-      const combinedStudents = [...existingData, ...newStudents];
-
-      // Sort by roll number
-      combinedStudents.sort((a, b) => {
-        const aNum = parseInt(a.rollNo, 10) || 0;
-        const bNum = parseInt(b.rollNo, 10) || 0;
-        return aNum - bNum;
-      });
-
-      // Build new grid
-      const newGrid = buildGridFromRows(combinedStudents);
-
-      suppressAutoSaveRef.current = true;
-      setSpreadsheetGridData(newGrid);
-
-      const errorMsg = parseErrors.length > 0 ? `\n\n⚠️ Skipped ${parseErrors.length} row(s) with errors` : '';
-      Alert.alert(
-        'Success',
-        `Added ${newStudents.length} new student(s) from CSV${errorMsg}\n\nRemember to click "Save All" to persist changes`,
-        [{ text: 'OK' }]
-      );
-
-    } catch (error) {
-      console.error('CSV Upload Error:', error);
-      Alert.alert('Error', `Failed to import CSV: ${error.message}`);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleSpreadsheetScroll = (event) => {
     const offsetX = event.nativeEvent.contentOffset.x;
@@ -1699,9 +1585,9 @@ const StudentManagementScreen = () => {
         // AUTO-CREATE: User doesn't exist, create Firebase Auth account + user doc
         console.log('📝 Creating new auth account for CR:', normalizedEmail);
 
-          // Generate CR password in format: firstname@1234
-          const studentFirstName = student.firstName || student.name?.split(' ')[0] || 'Student';
-          const crPassword = generateCRPassword(studentFirstName);
+        // Generate CR password in format: firstname@1234
+        const studentFirstName = student.firstName || student.name?.split(' ')[0] || 'Student';
+        const crPassword = generateCRPassword(studentFirstName);
 
         try {
           // Use secondary auth to avoid logging out the admin
@@ -1741,6 +1627,11 @@ const StudentManagementScreen = () => {
       }
 
       const { students: deptStudentPath, reps: deptCRPath } = buildDeptPaths(selectedYear);
+
+      // Get joining year for data consistency
+      const selectedTab = yearTabs.find(t => t.yearLevel === selectedYear);
+      const joiningYear = selectedTab ? selectedTab.joiningYear : 'N/A';
+
       const batch = writeBatch(db);
 
       // STEP A: Deactivate ANY existing active CR records for this slot in this year+dept
@@ -1790,7 +1681,9 @@ const StudentManagementScreen = () => {
         uid: crUserId,
         name: studentName,
         email: normalizedEmail,
+
         year: `year_${selectedYear}`,
+        joiningYear: joiningYear,
         crYear: `Year ${selectedYear}`,
         departmentId: dept,
         departmentName: departmentName || dept,
@@ -1818,6 +1711,7 @@ const StudentManagementScreen = () => {
           departmentId: dept,
           departmentName: departmentName || dept,
           currentYear: selectedYear,
+          joiningYear: joiningYear,
           crYear: `Year ${selectedYear}`,
           crPosition: slot === 'CR-1' ? 1 : 2,
           crDepartment: dept,
@@ -1863,7 +1757,7 @@ const StudentManagementScreen = () => {
     } finally {
       setLoading(false);
     }
-  }, [facultyId, collegeId, departmentId, departmentCode, departmentName, selectedYear, loadStudentsAndCR, buildDeptPaths]);
+  }, [facultyId, collegeId, departmentId, departmentCode, departmentName, selectedYear, loadStudentsAndCR, buildDeptPaths, yearTabs]);
 
 
   const handleAssignCR = useCallback((student) => {
@@ -2538,20 +2432,17 @@ const StudentManagementScreen = () => {
               decelerationRate="fast"
               scrollEventThrottle={16}
             >
-              {yearOptions.map(yearMeta => {
-                // Mapping: Year 1 = baseYear, Year 2 = baseYear - 1, Year 3 = baseYear - 2, Year 4 = baseYear - 3
-                return (
-                  <TouchableOpacity
-                    key={yearMeta.currentYear}
-                    style={[styles.pill, selectedYear === yearMeta.currentYear && styles.pillActive]}
-                    onPress={() => setSelectedYear(yearMeta.currentYear)}
-                  >
-                    <Text style={[styles.pillText, selectedYear === yearMeta.currentYear && styles.pillTextActive]}>
-                      Year {yearMeta.currentYear} – {yearMeta.academicYear}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
+              {yearTabs.map(tab => (
+                <TouchableOpacity
+                  key={tab.id}
+                  style={[styles.pill, selectedYear === tab.yearLevel && styles.pillActive]}
+                  onPress={() => setSelectedYear(tab.yearLevel)}
+                >
+                  <Text style={[styles.pillText, selectedYear === tab.yearLevel && styles.pillTextActive]}>
+                    {tab.label} – {tab.joiningYear}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </ScrollView>
 
             <View style={styles.contextMetaRow}>

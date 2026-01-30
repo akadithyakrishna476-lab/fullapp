@@ -64,6 +64,11 @@ const CRDashboard = () => {
       if (currentData?.studentId && currentData?.departmentId) {
         await fetchCurrentYearFromFirestore(currentData.studentId, currentData.departmentId);
       }
+
+      // 3. Sync Advisor
+      if (currentData) {
+        await syncWithAdvisor(currentData);
+      }
     } catch (error) {
       console.error('Error loading CR data:', error);
     }
@@ -132,6 +137,66 @@ const CRDashboard = () => {
       }
     } catch (error) {
       console.error('Error syncing profile:', error);
+    }
+  };
+
+  /**
+   * Syncs with Staff Advisor:
+   * 1. Finds advisor by joiningYear + departmentId
+   * 2. Updates local state with advisorName
+   * 3. ADD/UPDATE self in Advisor's advisedReps array
+   */
+  const syncWithAdvisor = async (crProfile) => {
+    if (!crProfile || !crProfile.joiningYear || !crProfile.departmentId) return;
+
+    try {
+      const { joiningYear, departmentId, studentId, name } = crProfile;
+      const targetYear = joiningYear.toString();
+      // departmentId might be 'IT', 'CSE' etc.
+
+      const q = query(
+        collection(db, 'staffAdvisors'),
+        where('joiningYear', '==', targetYear),
+        where('departmentId', '==', departmentId),
+        where('isStaffAdvisor', '==', true)
+      );
+
+      const snap = await getDocs(q);
+
+      if (!snap.empty) {
+        const advisorDoc = snap.docs[0];
+        const advisorData = advisorDoc.data();
+        console.log('[CRDashboard] Found Staff Advisor:', advisorData.advisorName);
+
+        // Update local state
+        setCRData(prev => ({ ...prev, advisorName: advisorData.advisorName }));
+
+        // 3. Register self in Advisor's list if missing
+        const currentReps = advisorData.advisedReps || [];
+        const myId = auth.currentUser?.uid; // Use auth UID as primary repId if possible, or studentId
+
+        const isAlreadyListed = currentReps.some(r => r.repId === myId || r.repId === studentId);
+
+        if (!isAlreadyListed) {
+          const newRepEntry = {
+            repId: myId || studentId || 'unknown',
+            repName: name,
+            joiningYear: joiningYear,
+            departmentId: departmentId,
+            role: 'CR'
+          };
+
+          const updatedReps = [...currentReps, newRepEntry];
+          await updateDoc(advisorDoc.ref, { advisedReps: updatedReps });
+          console.log('[CRDashboard] Registered self in Advisor list');
+        }
+      } else {
+        console.log('[CRDashboard] No Staff Advisor found for', { targetYear, departmentId });
+        setCRData(prev => ({ ...prev, advisorName: null }));
+      }
+
+    } catch (e) {
+      console.error('[CRDashboard] Advisor sync error:', e);
     }
   };
 
@@ -316,8 +381,14 @@ const CRDashboard = () => {
                   Department: {crData.departmentName || crData.departmentId}
                 </Text>
               </View>
+              <View style={styles.profileDetailRow}>
+                <Ionicons name="person-outline" size={16} color="#7f8c8d" />
+                <Text style={[styles.profileDetailText, { color: crData.advisorName ? '#2c3e50' : '#e74c3c' }]}>
+                  Staff Advisor: {crData.advisorName || 'Not assigned yet'}
+                </Text>
+              </View>
             </View>
-          </View>
+          </View >
         )}
 
         {/* Menu Grid */}
@@ -354,8 +425,8 @@ const CRDashboard = () => {
             </View>
           </View>
         </View>
-      </ScrollView>
-    </SafeAreaView>
+      </ScrollView >
+    </SafeAreaView >
   );
 };
 
