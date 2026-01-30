@@ -56,6 +56,14 @@ const menuItems = [
     description: 'Portal for Staff Advisors',
     screen: 'StaffAdvisor',
   },
+  {
+    id: '7',
+    title: 'Task Allocator',
+    icon: 'clipboard',
+    color: '#e67e22', // carrot orange
+    description: 'Assign tasks to students',
+    screen: 'FacultyTaskAssignment',
+  },
 ];
 
 const FacultyDashboard = () => {
@@ -175,6 +183,7 @@ const FacultyDashboard = () => {
       StaffAdvisor: 'staff-advisor',
       Announcements: 'send-announcement',
       ClassStatus: 'class-status',
+      FacultyTaskAssignment: 'faculty-task-assignment',
     };
     const path = map[screen] || screen.toLowerCase();
     router.push(`/${path}`);

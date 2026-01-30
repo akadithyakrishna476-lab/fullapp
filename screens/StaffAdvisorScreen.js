@@ -12,7 +12,6 @@ import {
   onSnapshot,
   query,
   serverTimestamp,
-  setDoc,
   updateDoc,
   where
 } from 'firebase/firestore';
@@ -103,22 +102,20 @@ const StaffAdvisorScreen = () => {
           // For now, we prioritize the new 'staffAdvisors' collection check below.
         }
 
-        // CHECK NEW COLLECTION: staffAdvisors/{facultyId}
-        const saRef = doc(db, 'staffAdvisors', user.uid);
-        const saSnap = await getDoc(saRef);
-
-        if (saSnap.exists()) {
-          const saData = saSnap.data();
-          console.log('[StaffAdvisor] Found in staffAdvisors collection:', saData);
+        // CHECK FACULTY COLLECTION for advisor status (Single Source of Truth)
+        if (data.isStaffAdvisor) {
+          console.log('[StaffAdvisor] Found Advisor Status in Faculty Doc:', data);
 
           setIsStaffAdvisor(true);
-          setAdvisorJoiningYear(saData.joiningYear); // Stored as 'joiningYear' in new schema
+          const joiningYear = data.advisorJoiningYear || data.joiningYear;
+          setAdvisorJoiningYear(joiningYear);
 
           // Auto-connect logic
-          const deptCode = saData.departmentName || saData.departmentId || data.department || data.departmentCode;
-          autoConnectReps(saData.joiningYear, deptCode);
+          const deptCode = data.departmentId || data.department || data.departmentCode || data.dept;
+          autoConnectReps(joiningYear, deptCode);
         } else {
-          console.log('[StaffAdvisor] Not found in staffAdvisors collection.');
+          // If not marked in faculty doc, prompt to enroll
+          console.log('[StaffAdvisor] Not marked as Staff Advisor.');
           setShowPrompt(true);
         }
       } else {
@@ -222,6 +219,15 @@ const StaffAdvisorScreen = () => {
               if (userJoiningYear == targetYear) {
                 isMatch = true;
                 repData = { id: userSnap.docs[0].id, ...userData };
+
+                // PERSIST LINK: Update User Document
+                const userDocRef = doc(db, 'users', userSnap.docs[0].id);
+                updateDoc(userDocRef, {
+                  linkedStaffAdvisorId: auth.currentUser?.uid,
+                  linkedStaffAdvisorName: userData?.name || 'Staff Advisor',
+                  advisorJoiningYear: targetYear.toString(),
+                  advisorDepartment: targetDept
+                }).catch(e => console.error('Error linking advisor to user doc:', e));
               }
             } else {
               const crJoiningYear = parseInt(crData.joiningYear) || crData.joiningYear || targetYear;
@@ -269,6 +275,15 @@ const StaffAdvisorScreen = () => {
           if (!foundRepsList.some(r => r.email === repData.email)) {
             console.log(`[StaffAdvisor] ✅ Linked Rep from Students: ${repData.name}`);
             foundRepsList.push(repData);
+
+            // PERSIST LINK: Update Student Document
+            const studentRef = doc(db, 'students', doc.id);
+            updateDoc(studentRef, {
+              linkedStaffAdvisorId: auth.currentUser?.uid,
+              linkedStaffAdvisorName: userData?.name || 'Staff Advisor',
+              advisorJoiningYear: targetYear.toString(),
+              advisorDepartment: targetDept
+            }).catch(e => console.error('Error linking advisor to student doc:', e));
           }
         }
       });
@@ -278,7 +293,8 @@ const StaffAdvisorScreen = () => {
       if (foundRepsList.length > 0) {
         setConnectionStatus('connected');
         const user = auth.currentUser;
-        setupRealtimeSubscriptions(user.uid, targetYear);
+        // Pass department to ensure correct path
+        setupRealtimeSubscriptions(user.uid, targetYear, targetDept);
       } else {
         setConnectionStatus('awaiting');
       }
@@ -290,7 +306,7 @@ const StaffAdvisorScreen = () => {
   };
 
 
-  const setupRealtimeSubscriptions = (fId, year) => {
+  const setupRealtimeSubscriptions = (fId, year, deptParam) => {
     if (!fId || !year) {
       console.warn('Cannot setup subscriptions: missing facultyId or year', { fId, year });
       return () => { };
@@ -298,8 +314,8 @@ const StaffAdvisorScreen = () => {
 
     const targetYear = year.toString();
 
-    // Get department from userData
-    const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
+    // Use passed department or fallback to userData - prioritize departmentId
+    const deptCode = deptParam || userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
     const deptDoc = `department_${deptCode}`;
     const yearSubcol = `year_${targetYear}`;
 
@@ -309,7 +325,12 @@ const StaffAdvisorScreen = () => {
     const tasksRef = collection(db, 'todos', deptDoc, yearSubcol);
 
     const unsubTasks = onSnapshot(tasksRef, (snap) => {
-      const tasksList = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const tasksList = snap.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data(),
+        deptDoc: deptDoc,
+        yearSubcol: yearSubcol
+      }));
       // Sort desc by createdAt
       tasksList.sort((a, b) => {
         const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : 0;
@@ -355,21 +376,20 @@ const StaffAdvisorScreen = () => {
       setLoading(true);
       const user = auth.currentUser;
       const facultyRef = doc(db, 'faculty', user.uid);
-      // We don't modify 'faculty' doc anymore for role storage, only for reference if needed.
-      // Instead, we create a document in 'staffAdvisors' collection.
 
-      const deptCode = userData?.department || userData?.departmentCode || userData?.departmentName || 'UNKNOWN';
+      const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || userData?.departmentName || 'UNKNOWN';
       const deptName = userData?.departmentName || deptCode;
 
-      const saData = {
+      // Update FACULTY document directly
+      const updateData = {
         isStaffAdvisor: true,
-        joiningYear: joiningYear.toString(), // Use 'joiningYear' to match new schema request
+        advisorJoiningYear: joiningYear.toString(), // Standardize field name
         departmentId: deptCode,
         departmentName: deptName,
-        createdAt: serverTimestamp()
+        updatedAt: serverTimestamp()
       };
 
-      await setDoc(doc(db, 'staffAdvisors', user.uid), saData);
+      await updateDoc(facultyRef, updateData);
 
       setIsStaffAdvisor(true);
       setAdvisorJoiningYear(joiningYear);
@@ -377,7 +397,7 @@ const StaffAdvisorScreen = () => {
       setFacultyId(user.uid);
 
       autoConnectReps(joiningYear, deptCode);
-      setupRealtimeSubscriptions(user.uid, joiningYear);
+      setupRealtimeSubscriptions(user.uid, joiningYear, deptCode);
 
       Alert.alert('Success', `You are now connected as Staff Advisor for the ${joiningYear} batch.`);
     } catch (error) {
@@ -401,7 +421,7 @@ const StaffAdvisorScreen = () => {
 
       await addDoc(collection(db, 'todos', deptDoc, yearSubcol), {
         title: newTaskTitle.trim(),
-        description: newTaskDescription.trim() || '',
+        // Description field removed per request
         status: 'pending',
         createdBy: auth.currentUser?.uid,
         completedBy: null,
@@ -421,7 +441,6 @@ const StaffAdvisorScreen = () => {
   const handleEditTask = (task) => {
     setEditingTask(task);
     setEditTaskTitle(task.title);
-    setEditTaskDescription(task.description || '');
     setShowEditTaskModal(true);
   };
 
@@ -439,7 +458,7 @@ const StaffAdvisorScreen = () => {
       const taskRef = doc(db, 'todos', deptDoc, yearSubcol, editingTask.id);
       await updateDoc(taskRef, {
         title: editTaskTitle.trim(),
-        description: editTaskDescription.trim() || '',
+        // Description field removed
         updatedAt: serverTimestamp()
       });
 
@@ -484,12 +503,17 @@ const StaffAdvisorScreen = () => {
 
   const handleToggleTaskStatus = async (task) => {
     try {
-      const taskRef = doc(db, 'staffAdvisorTodos', task.id);
+      const deptCode = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
+      const deptDoc = task.deptDoc || `department_${deptCode}`;
+      const yearSubcol = task.yearSubcol || `year_${advisorJoiningYear}`;
+
+      const taskRef = doc(db, 'todos', deptDoc, yearSubcol, task.id);
       const newStatus = task.status === 'completed' ? 'pending' : 'completed';
       await updateDoc(taskRef, {
         status: newStatus,
         completedBy: newStatus === 'completed' ? 'faculty' : null,
-        completedAt: newStatus === 'completed' ? serverTimestamp() : null
+        completedAt: newStatus === 'completed' ? serverTimestamp() : null,
+        updatedAt: serverTimestamp()
       });
     } catch (error) {
       console.error('Error updating task status:', error);
@@ -860,14 +884,7 @@ const StaffAdvisorScreen = () => {
               onChangeText={setNewTaskTitle}
             />
 
-            <TextInput
-              style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-              placeholder="Description (optional)"
-              value={newTaskDescription}
-              onChangeText={setNewTaskDescription}
-              multiline
-              numberOfLines={3}
-            />
+
 
             <TouchableOpacity style={styles.submitBtn} onPress={handleAddTask}>
               <Text style={styles.submitBtnText}>Create Task</Text>
@@ -894,14 +911,7 @@ const StaffAdvisorScreen = () => {
               onChangeText={setEditTaskTitle}
             />
 
-            <TextInput
-              style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
-              placeholder="Description (optional)"
-              value={editTaskDescription}
-              onChangeText={setEditTaskDescription}
-              multiline
-              numberOfLines={3}
-            />
+
 
             <TouchableOpacity style={styles.submitBtn} onPress={handleUpdateTask}>
               <Text style={styles.submitBtnText}>Update Task</Text>
@@ -913,112 +923,110 @@ const StaffAdvisorScreen = () => {
   );
 };
 
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f5f6fa',
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 15,
+    padding: 16,
     backgroundColor: '#fff',
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f1f1',
+    borderBottomColor: '#ddd',
   },
   headerTitle: {
+    flex: 1,
+    textAlign: 'center',
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: 'bold',
     color: '#2c3e50',
   },
   tabBar: {
     backgroundColor: '#fff',
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#f1f1f1',
+    borderBottomColor: '#eee',
   },
   tab: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 8,
-    marginRight: 10,
     borderRadius: 20,
-    backgroundColor: '#f8f9fa',
+    marginRight: 8,
+    backgroundColor: '#f1f2f6',
   },
   tabActive: {
-    backgroundColor: '#f0e7f6',
+    backgroundColor: '#e8f0fe',
   },
   tabLabel: {
     marginLeft: 6,
-    fontSize: 14,
     color: '#7f8c8d',
-    fontWeight: '500',
+    fontWeight: '600',
   },
   tabLabelActive: {
     color: '#9b59b6',
-    fontWeight: '700',
+  },
+  scrollContent: {
+    paddingBottom: 20,
   },
   tabContent: {
-    padding: 20,
+    padding: 16,
   },
   card: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    padding: 20,
-    marginBottom: 20,
-    elevation: 2,
+    padding: 16,
+    marginBottom: 16,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 2,
   },
   cardTitle: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: 'bold',
     color: '#2c3e50',
-    marginBottom: 15,
+    marginBottom: 12,
   },
   infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 10,
+    marginBottom: 8,
   },
   label: {
-    fontSize: 14,
     color: '#7f8c8d',
+    fontSize: 14,
   },
   value: {
+    color: '#2c3e50',
     fontSize: 14,
     fontWeight: '600',
-    color: '#2c3e50',
   },
   statGrid: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
   statItem: {
-    alignItems: 'center',
     flex: 1,
+    alignItems: 'center',
   },
   statNumber: {
-    fontSize: 20,
-    fontWeight: 'BOLD',
+    fontSize: 24,
+    fontWeight: 'bold',
     color: '#2c3e50',
   },
   statLabel: {
     fontSize: 12,
     color: '#7f8c8d',
-    marginTop: 4,
   },
   statGood: {
     color: '#2ecc71',
@@ -1026,78 +1034,166 @@ const styles = StyleSheet.create({
   statWarning: {
     color: '#f39c12',
   },
-  // Communication Styles
-  messageContainer: {
-    paddingHorizontal: 16,
-    paddingVertical: 4,
-    width: '100%',
+  todoHeader: {
+    backgroundColor: '#9b59b6',
+    padding: 20,
+    paddingTop: 40,
   },
-  messageLeft: {
-    alignItems: 'flex-start',
+  todoHeaderTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  backButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  backText: {
+    color: '#fff',
+    marginLeft: 4,
+  },
+  todoHeaderIcons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  todoCountText: {
+    color: '#fff',
+    marginLeft: 6,
+    fontWeight: 'bold',
+  },
+  todoHeaderText: {
+    color: '#fff',
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginTop: 10,
+  },
+  todoListContainer: {
+    padding: 16,
+  },
+  taskItemContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 10,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  taskItemCompleted: {
+    opacity: 0.6,
+  },
+  taskItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  taskCheckmark: {
+    marginRight: 12,
+  },
+  taskInfo: {
+    flex: 1,
+  },
+  taskTitle: {
+    color: '#2c3e50',
+    fontSize: 16,
+  },
+  taskTitleCompleted: {
+    textDecorationLine: 'line-through',
+    color: '#95a5a6',
+  },
+  taskActions: {
+    flexDirection: 'row',
+  },
+  actionButton: {
+    padding: 8,
+  },
+  messageContainer: {
+    marginBottom: 10,
+    flexDirection: 'row',
   },
   messageRight: {
-    alignItems: 'flex-end',
+    justifyContent: 'flex-end',
+  },
+  messageLeft: {
+    justifyContent: 'flex-start',
   },
   messageBubble: {
     maxWidth: '80%',
     padding: 12,
     borderRadius: 16,
   },
-  bubbleLeft: {
-    backgroundColor: '#f1f1f1',
-    borderBottomLeftRadius: 4,
-  },
   bubbleRight: {
     backgroundColor: '#9b59b6',
     borderBottomRightRadius: 4,
   },
+  bubbleLeft: {
+    backgroundColor: '#fff',
+    borderBottomLeftRadius: 4,
+    borderWidth: 1,
+    borderColor: '#eee',
+  },
   senderName: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 10,
     color: '#7f8c8d',
-    marginBottom: 4,
+    marginBottom: 2,
   },
   messageText: {
-    fontSize: 14,
     color: '#2c3e50',
   },
   inputBar: {
     flexDirection: 'row',
     padding: 10,
     backgroundColor: '#fff',
-    alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: '#f1f1f1',
+    borderTopColor: '#eee',
+    alignItems: 'center',
   },
   chatInput: {
     flex: 1,
-    height: 40,
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f1f2f6',
     borderRadius: 20,
-    paddingHorizontal: 15,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     marginRight: 10,
+    color: '#2c3e50',
   },
   sendButtonChat: {
+    backgroundColor: '#9b59b6',
     width: 40,
     height: 40,
-    backgroundColor: '#9b59b6',
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  // Enrollment Styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   enrollModal: {
-    backgroundColor: '#fff',
     width: '85%',
+    backgroundColor: '#fff',
     borderRadius: 16,
     padding: 24,
     alignItems: 'center',
   },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#2c3e50',
+    marginBottom: 10,
+  },
   modalMessage: {
-    fontSize: 16,
-    color: '#34495e',
+    color: '#7f8c8d',
     textAlign: 'center',
-    lineHeight: 24,
     marginBottom: 20,
   },
   enrollButtons: {
@@ -1107,13 +1203,13 @@ const styles = StyleSheet.create({
   },
   enrollBtn: {
     flex: 1,
-    paddingVertical: 12,
+    padding: 12,
     borderRadius: 8,
     alignItems: 'center',
     marginHorizontal: 5,
   },
   btnYes: {
-    backgroundColor: '#2ecc71',
+    backgroundColor: '#9b59b6',
   },
   btnNo: {
     backgroundColor: '#ecf0f1',
@@ -1130,7 +1226,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#9b59b6',
     paddingVertical: 12,
     paddingHorizontal: 30,
-    borderRadius: 8,
+    borderRadius: 25,
+    marginTop: 10,
     width: '100%',
     alignItems: 'center',
   },
@@ -1138,150 +1235,38 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: 'bold',
   },
-  // To-Do Refined Styles
-  todoHeader: {
-    backgroundColor: '#2a837c',
-    paddingTop: 20,
-    paddingBottom: 30,
-    paddingHorizontal: 20,
-  },
-  todoHeaderTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  backText: {
-    color: '#fff',
-    fontSize: 16,
-    marginLeft: 4,
-  },
-  todoHeaderIcons: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  todoCountText: {
-    color: '#fff',
-    marginLeft: 6,
-    fontWeight: '700',
-  },
-  todoHeaderText: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  todoListContainer: {
-    flex: 1,
-    backgroundColor: '#2a837c',
-    paddingHorizontal: 10,
-    marginTop: -10,
-  },
-  taskItemContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fff',
+  input: {
+    width: '100%',
+    backgroundColor: '#f9f9f9',
+    borderWidth: 1,
+    borderColor: '#eee',
     borderRadius: 8,
-    marginBottom: 1,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-  },
-  taskItem: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  taskCheckmark: {
-    marginRight: 15,
-  },
-  taskInfo: {
-    flex: 1,
-  },
-  taskTitle: {
-    fontSize: 16,
-    color: '#2c3e50',
-    fontWeight: '500',
-  },
-  taskTitleCompleted: {
-    textDecorationLine: 'line-through',
-    color: '#bdc3c7',
-  },
-  taskItemCompleted: {
-    backgroundColor: '#f9fbfb',
-  },
-  taskActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  actionButton: {
-    padding: 8,
-    marginLeft: 4,
-  },
-  addTaskFloatingBtn: {
-    position: 'absolute',
-    bottom: 30,
-    right: 30,
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: '#f39c12',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center'
+    padding: 12,
+    marginBottom: 15,
   },
   taskModal: {
-    backgroundColor: '#fff',
     width: '90%',
+    backgroundColor: '#fff',
     borderRadius: 16,
-    padding: 24,
-    maxHeight: '80%'
+    padding: 20,
   },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 20
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#2c3e50'
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ecf0f1',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 16,
-    fontSize: 14
+    marginBottom: 20,
   },
   submitBtn: {
-    backgroundColor: '#2a837c',
-    paddingVertical: 14,
+    backgroundColor: '#9b59b6',
+    padding: 15,
     borderRadius: 8,
     alignItems: 'center',
-    marginTop: 10
+    marginTop: 10,
   },
   submitBtnText: {
     color: '#fff',
-    fontWeight: 'bold'
+    fontWeight: 'bold',
+    fontSize: 16,
   },
 });
 

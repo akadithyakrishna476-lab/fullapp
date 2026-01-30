@@ -105,48 +105,72 @@ const TodoListScreen = () => {
         // Check if Rep (in users collection)
         const userRef = doc(db, 'users', user.uid);
         const userSnap = await getDoc(userRef);
+
+        let uYear, uDept;
+
         if (userSnap.exists()) {
           const data = userSnap.data();
-          console.log('[TodoList] Detected Student/Rep. Joining Year:', data.joiningYear, 'Dept:', data.department || data.departmentCode);
+          console.log('[TodoList] Detected User in users collection:', data);
           setUserData(data);
           setUserRole('rep');
 
-          console.log('[TodoList] User Data Keys:', Object.keys(data));
-          const joiningYear = data.joiningYear || data.year || data.batch || data.admissionYear;
-          const dept = data.department || data.departmentCode || data.departmentId || data.dept || data.deptCode;
-
-          if (!joiningYear || !dept) {
-            console.log('[TodoList] Profile incomplete in users collection. Checking students collection...');
-
-            // Fallback: Check 'students' collection group
-            const studentsQuery = query(
-              collectionGroup(db, 'students'),
-              where('email', '==', user.email)
-            );
-
-            const studentsSnap = await getDocs(studentsQuery);
-            if (!studentsSnap.empty) {
-              const studentData = studentsSnap.docs[0].data();
-              console.log('[TodoList] Found data in students collection:', studentData);
-              const sYear = studentData.joiningYear || studentData.year || studentData.batch;
-              const sDept = studentData.department || studentData.departmentCode || studentData.dept;
-
-              if (sYear && sDept) {
-                await findAdvisor(sYear, sDept);
-                return;
-              }
-            }
-
-            console.warn('[TodoList] Rep profile incomplete:', { joiningYear, dept });
-            setLoading(false);
+          uYear = data.joiningYear || data.year || data.batch || data.admissionYear;
+          uDept = data.department || data.departmentCode || data.departmentId || data.dept || data.deptCode;
+          // PRIORITY: Check for Persisted Advisor Link
+          if (data.linkedStaffAdvisorId) {
+            console.log('[TodoList] Found stored Staff Advisor Link:', data.linkedStaffAdvisorId);
+            setFacultyId(data.linkedStaffAdvisorId);
+            setAdvisorName(data.linkedStaffAdvisorName || 'Staff Advisor');
+            // Use stored year or own year
+            const advYear = data.advisorJoiningYear || data.joiningYear;
+            setAdvisorJoiningYear(advYear);
+            setupRealtimeSubscriptions(data.linkedStaffAdvisorId, advYear);
             return;
           }
-
-          await findAdvisor(joiningYear, dept);
         } else {
-          console.warn('[TodoList] UID not found in faculty or users collections');
-          setLoading(false);
+          setUserRole('rep');
         }
+
+        // Attempt 1: Try with Users collection data
+        let advisorFound = false;
+        if (uYear && uDept) {
+          console.log('[TodoList] Trying with Users data:', { uYear, uDept });
+          advisorFound = await findAdvisor(uYear, uDept, false); // Don't set error yet
+        }
+
+        if (advisorFound) return;
+
+        console.log('[TodoList] Users data match failed or incomplete. Checking students collection...');
+
+        // Attempt 2: Check 'students' collection group
+        const studentsQuery = query(
+          collectionGroup(db, 'students'),
+          where('email', '==', user.email)
+        );
+
+        const studentsSnap = await getDocs(studentsQuery);
+        if (!studentsSnap.empty) {
+          const studentData = studentsSnap.docs[0].data();
+          console.log('[TodoList] Found data in students collection:', studentData);
+
+          const sYear = studentData.joiningYear || studentData.year || studentData.batch;
+          // Check all possible department fields including departmentName which is common in manual entries
+          const sDept = studentData.departmentName || studentData.department || studentData.departmentCode || studentData.dept || studentData.departmentId;
+
+          // MERGE DATA: Use Student data if available, otherwise fallback to User data
+          const finalYear = sYear || uYear;
+          const finalDept = sDept || uDept;
+
+          if (finalYear && finalDept) {
+            console.log('[TodoList] Trying with Combined data:', { finalYear, finalDept });
+            await findAdvisor(finalYear, finalDept, true); // Set error if fails this time
+            return;
+          }
+        }
+
+        console.warn('[TodoList] Rep profile incomplete and no advisor found via fallback.');
+        setNoAdvisor(true);
+        setLoading(false);
       }
     } catch (error) {
       console.error('[TodoList] Error in loadUserStatus:', error);
@@ -154,105 +178,108 @@ const TodoListScreen = () => {
     }
   };
 
-  const findAdvisor = async (joiningYear, dept) => {
+  const findAdvisor = async (joiningYear, dept, setError = true) => {
     setMyDept(dept);
-    // Find matching advisor
     console.log('[TodoList] Searching for Staff Advisor. Year:', joiningYear, 'Dept:', dept);
 
-    // Try searching by year first (using new 'staffAdvisors' collection)
-    const yearQuery = query(
-      collection(db, 'staffAdvisors'), // Updated collection
-      // where('isStaffAdvisor', '==', true) // Implicit in collection existence
-    );
+    // Query 'faculty' collection directly by joining year to ensure we find them
+    // irrespective of 'isStaffAdvisor' flag which might be missing.
+    const facultyRef = collection(db, 'faculty');
+    const targetYearStr = joiningYear.toString();
+    const targetYearNum = parseInt(joiningYear);
 
-    const yearSnap = await getDocs(yearQuery);
-    console.log(`[TodoList] Found ${yearSnap.size} total Staff Advisors. Filtering for Year: ${joiningYear} and Dept: ${dept}`);
+    console.log(`[TodoList] Querying faculty for advisorJoiningYear == "${targetYearStr}" OR ${targetYearNum}`);
+
+    // Run parallel queries for String and Number types
+    const qString = query(facultyRef, where('advisorJoiningYear', '==', targetYearStr));
+    const qNumber = !isNaN(targetYearNum) ? query(facultyRef, where('advisorJoiningYear', '==', targetYearNum)) : null;
+
+    const [snapString, snapNumber] = await Promise.all([
+      getDocs(qString),
+      qNumber ? getDocs(qNumber) : Promise.resolve({ docs: [] })
+    ]);
+
+    // Merge results, removing duplicates by ID
+    const mergedDocs = [...snapString.docs, ...snapNumber.docs];
+    const uniqueDocsMap = new Map();
+    mergedDocs.forEach(d => uniqueDocsMap.set(d.id, d));
+    const uniqueDocs = Array.from(uniqueDocsMap.values());
+
+    console.log(`[TodoList] Found ${uniqueDocs.length} Faculty matches (String: ${snapString.size}, Number: ${snapNumber?.size || 0}).`);
+
+    // Use the unique merged docs for filtering
+    const facultySnapDocs = uniqueDocs;
 
     const normalizeDept = (d) => {
       if (!d) return '';
       const s = d.toString().toUpperCase().trim();
+      // Map common abbreviations to full names
       const map = {
         'IT': 'INFORMATION TECHNOLOGY',
         'CSE': 'COMPUTER SCIENCE',
         'CS': 'COMPUTER SCIENCE',
         'ECE': 'ELECTRONICS AND COMMUNICATION',
-        'EEE': 'ELECTRICAL AND ELECTRONICS',
+        'EEE': 'ELECTRONICS AND ELECTRICAL',
         'MECH': 'MECHANICAL ENGINEERING',
         'CIVIL': 'CIVIL ENGINEERING',
         'AIDS': 'ARTIFICIAL INTELLIGENCE'
       };
-      return map[s] || s; // Return mapped value or original (uppercase)
+      return map[s] || s;
     };
 
     const targetDeptNorm = normalizeDept(dept);
+    console.log(`[TodoList] Target Dept Normalized: "${targetDeptNorm}"`);
 
-    const matchingAdvisors = yearSnap.docs.filter(doc => {
+    const matchingAdvisors = facultySnapDocs.filter(doc => {
       const fData = doc.data();
-      const fYear = fData.joiningYear; // Updated field name
-      const fDept = fData.departmentName || fData.departmentId || fData.department || fData.dept; // Updated field priority
-
-      const yearMatch = fYear && fYear.toString() === joiningYear.toString();
-
+      const fDept = fData.departmentName || fData.department || fData.dept || fData.departmentId;
       const fDeptNorm = normalizeDept(fDept);
 
-      // Check exact normalize match OR if one includes the other (fuzzy)
-      const deptMatch = fDeptNorm === targetDeptNorm || fDeptNorm.includes(targetDeptNorm) || targetDeptNorm.includes(fDeptNorm);
+      // Fuzzy matching for department
+      // We check if:
+      // 1. Exact match
+      // 2. Contains match (e.g. "Dept of IT" contains "IT")
+      const deptMatch = fDeptNorm === targetDeptNorm ||
+        (fDeptNorm && targetDeptNorm && (fDeptNorm.includes(targetDeptNorm) || targetDeptNorm.includes(fDeptNorm)));
 
-      if (yearMatch) {
-        console.log(`[TodoList] Potential Advisor: ${fData.name}, Dept: ${fDept} (Norm: ${fDeptNorm}), Target: ${dept} (Norm: ${targetDeptNorm}), Match: ${deptMatch}`);
-      }
+      console.log(`[TodoList] Checking Faculty: ${fData.name}, Dept: "${fDept}" -> Norm: "${fDeptNorm}". Match: ${deptMatch}`);
 
-      return yearMatch && deptMatch;
+      return deptMatch;
     });
 
     if (matchingAdvisors.length > 0) {
       const advisorDoc = matchingAdvisors[0];
       const advisorData = advisorDoc.data();
 
-      // Need to fetch Faculty Name separately if not stored in staffAdvisors (assuming it might be stored)
-      // Check if name is in advisorData. If not, fetch from 'faculty' collection.
-      let advisorName = advisorData.name;
-      if (!advisorName) {
-        // This is synchronous filter, so async fetch here is tricky. 
-        // But we proceed. We will fetch name in setup if needed, or better, user 'faculty' query combined?
-        // Actually, let's assume we can fetch it. For now, we set ID.
-      }
+      console.log('[TodoList] Found advisor:', advisorData.name, 'ID:', advisorDoc.id);
 
-      console.log('[TodoList] Found advisor ID:', advisorDoc.id);
       setFacultyId(advisorDoc.id);
+      setAdvisorName(advisorData.name || 'Staff Advisor');
+      setAdvisorDept(advisorData.departmentName || 'Unknown Dept');
+      setAdvisorJoiningYear(advisorData.advisorJoiningYear || advisorData.joiningYear); // Ensure we set the correct year
 
-      // Since name might not be in staffAdvisors, we might need to fetch profile.
-      // But for now, let's assume previous structure or fetch it.
-      // TODO: Fetch faculty name if missing.
+      // Subscribe to the tasks
+      setupRealtimeSubscriptions(advisorDoc.id, advisorData.advisorJoiningYear || advisorData.joiningYear);
 
-      setAdvisorName(advisorData.name || 'Staff Advisor'); // Fallback
-      setAdvisorDept(advisorData.departmentName || advisorData.departmentId || 'Unknown Dept');
-      setAdvisorJoiningYear(advisorData.joiningYear);
-      setupRealtimeSubscriptions(advisorDoc.id, advisorData.joiningYear);
-
-      // Async fetch name if missing
-      if (!advisorData.name) {
-        getDoc(doc(db, 'faculty', advisorDoc.id)).then(snap => {
-          if (snap.exists()) setAdvisorName(snap.data().name);
-        });
-      }
-
-      return;
+      setNoAdvisor(false);
+      return true;
     }
 
-    // Fallback Removed: strict matching only.
-    console.warn('[TodoList] match failed. No advisor set.');
+    console.warn('[TodoList] No matching Staff Advisor found in faculty collection.');
 
-    console.warn('[TodoList] No matching Staff Advisor found for this batch.');
-    setNoAdvisor(true);
-    setLoading(false);
+    if (setError) {
+      setNoAdvisor(true);
+      setLoading(false);
+    }
+
+    return false;
   };
 
   const setupRealtimeSubscriptions = (fId, year) => {
     console.log('[TodoList] Subscribing to tasks for Advisor:', fId, 'Year:', year);
 
-    // Get department from userData to construct hierarchical path
-    const dept = userData?.department || userData?.departmentCode || userData?.departmentId || 'UNKNOWN';
+    // Get department from userData to construct hierarchical path - prioritize departmentId
+    const dept = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
     const deptDoc = `department_${dept}`;
     const yearSubcol = `year_${year}`;
 
@@ -294,7 +321,7 @@ const TodoListScreen = () => {
     }
 
     try {
-      const dept = userData?.department || userData?.departmentCode || userData?.departmentId || 'UNKNOWN';
+      const dept = userData?.departmentId || userData?.department || userData?.departmentCode || 'UNKNOWN';
       const deptDoc = `department_${dept}`;
       const yearSubcol = `year_${advisorJoiningYear}`;
 

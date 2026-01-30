@@ -249,6 +249,14 @@ const CRDashboard = () => {
       description: 'Share temp passwords',
       screen: '/password-sharing',
     },
+    {
+      id: '8',
+      title: 'Task Assignments',
+      icon: 'clipboard',
+      color: '#e67e22',
+      description: 'View assigned tasks',
+      screen: '/cr-task-assignment',
+    },
   ];
 
   return (
